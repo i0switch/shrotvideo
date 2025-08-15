@@ -1,0 +1,116 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Definition of the design system. All colors, gradients, fonts, etc should be defined here. 
+All colors MUST be HSL.
+*/
+
+@layer base {
+  :root {
+    --background: 210 20% 9%;
+    --foreground: 210 20% 98%;
+
+    --card: 222 24% 10%;
+    --card-foreground: 210 20% 98%;
+
+    --popover: 222 24% 10%;
+    --popover-foreground: 210 20% 98%;
+
+    --primary: 258 85% 58%; /* brand */
+    --primary-foreground: 210 40% 98%;
+
+    --secondary: 216 34% 17%;
+    --secondary-foreground: 210 40% 98%;
+
+    --muted: 220 14% 20%;
+    --muted-foreground: 215 20% 75%;
+
+    --accent: 191 97% 44%;
+    --accent-foreground: 210 40% 98%;
+
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 210 40% 98%;
+
+    --border: 220 14% 25%;
+    --input: 220 14% 23%;
+    --ring: 258 85% 58%;
+
+    --radius: 0.7rem;
+
+    --sidebar-background: 222 24% 10%;
+    --sidebar-foreground: 210 20% 90%;
+    --sidebar-primary: 258 85% 58%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 222 20% 16%;
+    --sidebar-accent-foreground: 210 20% 96%;
+    --sidebar-border: 220 14% 22%;
+    --sidebar-ring: 258 85% 58%;
+
+    /* Extra design tokens */
+    --brand: var(--primary);
+    --brand-glow: 258 85% 70%;
+    --info: 200 98% 50%;
+
+    /* Gradients */
+    --gradient-app: radial-gradient(1200px 800px at var(--pointer-x,50%) var(--pointer-y,50%), hsl(var(--brand)/0.15) 0%, transparent 40%), linear-gradient(180deg, hsl(222 24% 10%) 0%, hsl(222 24% 8%) 100%);
+    --gradient-cta: linear-gradient(135deg, hsl(var(--primary)) 0%, hsl(var(--accent)) 100%);
+
+    /* Shadows */
+    --shadow-soft: 0 10px 30px -10px hsl(var(--primary)/0.35);
+    --shadow-glow: 0 0 40px hsl(var(--brand-glow)/0.45);
+
+    /* Motion */
+    --transition-smooth: 250ms cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  .dark {
+    --background: 222.2 84% 4.9%;
+    --foreground: 210 40% 98%;
+
+    --card: 222.2 84% 4.9%;
+    --card-foreground: 210 40% 98%;
+
+    --popover: 222.2 84% 4.9%;
+    --popover-foreground: 210 40% 98%;
+
+    --primary: 210 40% 98%;
+    --primary-foreground: 222.2 47.4% 11.2%;
+
+    --secondary: 217.2 32.6% 17.5%;
+    --secondary-foreground: 210 40% 98%;
+
+    --muted: 217.2 32.6% 17.5%;
+    --muted-foreground: 215 20.2% 65.1%;
+
+    --accent: 217.2 32.6% 17.5%;
+    --accent-foreground: 210 40% 98%;
+
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 210 40% 98%;
+
+    --border: 217.2 32.6% 17.5%;
+    --input: 217.2 32.6% 17.5%;
+    --ring: 212.7 26.8% 83.9%;
+    --sidebar-background: 240 5.9% 10%;
+    --sidebar-foreground: 240 4.8% 95.9%;
+    --sidebar-primary: 224.3 76.3% 48%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 240 3.7% 15.9%;
+    --sidebar-accent-foreground: 240 4.8% 95.9%;
+    --sidebar-border: 240 3.7% 15.9%;
+    --sidebar-ring: 217.2 91.2% 59.8%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family: 'Noto Sans JP', ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
+    /* background gradient disabled for a solid app background */
+  }
+}

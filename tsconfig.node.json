@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    "target": "ES2022",
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "allowSyntheticDefaultImports": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "noFallthroughCasesInSwitch": true,
+    "outDir": "dist-electron"
+  },
+  "include": [
+    "electron/**/*.ts",
+    "core/**/*.ts",
+    "ingest/**/*.ts",
+    "app/**/*.ts",
+    "render/**/*.ts"
+  ]
+}
