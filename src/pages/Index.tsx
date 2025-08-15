@@ -15,10 +15,14 @@ const Index = () => {
 
   useEffect(() => {
     const unsubscribe = window.electronAPI.onLogMessage((message: string) => {
-      setLogs((prevLogs) => [...prevLogs, message]);
+      // Keep the log array from getting too large in memory
+      setLogs((prevLogs) => [...prevLogs.slice(-200), message]);
     });
+    // Cleanup the listener when the component unmounts
     return () => {
-      // unsubscribe(); // Assuming onLogMessage returns an unsubscribe function
+      if (unsubscribe) {
+        unsubscribe();
+      }
     };
   }, []);
 

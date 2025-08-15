@@ -28,12 +28,9 @@ export default defineConfig(({ mode }) => ({
   test: {
     globals: true,
     environment: 'node', // Use node environment for Electron tests
-    include: ['src/tests/**/*.test.ts'], // src/tests配下のユニットテストを対象
-    // exclude: ['electron/tests/video-generator.test.ts'], // Exclude this specific test file
+    include: ['electron/tests/**/*.test.ts'], // Only run unit tests from the electron folder
+    exclude: ['src/tests/e2e-app.test.ts'], // Explicitly exclude E2E tests from vitest runner
     setupFiles: [],
-    transform: {
-      '\\.test\\.ts$': 'esbuild', // Use esbuild for test files
-      '\\.ts$': 'esbuild', // Use esbuild for other .ts files
-    },
+    // No need for custom transform, vitest handles TS
   },
 }));

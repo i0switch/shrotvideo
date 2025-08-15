@@ -3,7 +3,7 @@ import pRetry from 'p-retry';
 import Store from 'electron-store';
 import log from 'electron-log';
 import type { AppSettings, Platform, Account } from '../src/core/settings.js';
-import { scrapeAccount } from './tasks/scraper.js';
+import { scrapeAccount, ScrapeResult } from './tasks/scraper.js';
 import { generateVideo } from './tasks/video-generator.js';
 
 type JobStatus = 'idle' | 'running' | 'stopped';
@@ -190,14 +190,23 @@ export class JobManager {
     const task = async () => {
       log.info(`Running task for ${platform}: ${accountId}`);
       // 1. Scrape
-      const screenshotPath = await scrapeAccount(platform, accountId, (this.store as any).store);
-      if (!screenshotPath) {
-        throw new Error('Scraping did not return a valid path.');
+      const scrapeResult = await scrapeAccount(platform, accountId, (this.store as any).store);
+      if (!scrapeResult) {
+        throw new Error('Scraping did not return a result.');
       }
-      log.info(`[${platform}:${accountId}] Scraping successful: ${screenshotPath}`);
+      log.info(`[${platform}:${accountId}] Scraping successful:`, scrapeResult);
 
       // 2. Generate Video
-      const videoPath = await generateVideo(screenshotPath, (this.store as any).store);
+      let videoPath: string;
+      if (scrapeResult.type === 'screenshot') {
+        videoPath = await generateVideo(scrapeResult.path, (this.store as any).store);
+      } else if (scrapeResult.type === 'video_url') {
+        // Pass empty string for screenshot path, and the url as the third argument
+        videoPath = await generateVideo('', (this.store as any).store, scrapeResult.url);
+      } else {
+        throw new Error(`Unknown scrape result type: ${(scrapeResult as any).type}`);
+      }
+
       log.info(`[${platform}:${accountId}] Video generation successful: ${videoPath}`);
     };
 

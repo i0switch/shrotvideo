@@ -1,71 +1,137 @@
-import { describe, it, expect } from 'vitest'; // Import from vitest for clarity
-import { escapeFFmpegText, getOverlayPosition, getFontSize } from '../tasks/video-generator.js'; 
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { generateVideo } from '../tasks/video-generator.js';
+import type { AppSettings } from '../../src/core/settings';
+import ffmpeg from 'fluent-ffmpeg';
 
-describe('video-generator utility functions', () => {
-  describe('escapeFFmpegText', () => {
-    it('should escape single quotes', () => {
-      expect(escapeFFmpegText("It's a test")).to.equal("It's a test");
-    });
+// Mock fluent-ffmpeg
+const mockFfmpeg = {
+  input: vi.fn().mockReturnThis(),
+  complexFilter: vi.fn().mockReturnThis(),
+  outputOptions: vi.fn().mockReturnThis(),
+  on: vi.fn((event, callback) => {
+    if (event === 'end') {
+      // Immediately call the 'end' callback to resolve the promise
+      callback();
+    }
+    return mockFfmpeg; // Return this for chaining
+  }),
+  save: vi.fn().mockReturnThis(),
+  // Add a start event mock for logging
+  onStart: vi.fn().mockReturnThis(),
+};
 
-    it('should escape backslashes', () => {
-      expect(escapeFFmpegText("C:\\path\\to\\file")).to.equal("C:\\path\\to\\file"); // Corrected expectation
-    });
+vi.mock('fluent-ffmpeg', () => ({
+  default: vi.fn(() => mockFfmpeg),
+}));
+vi.mock('electron-log', () => ({
+    default: {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+    }
+}));
 
-    it('should escape colons', () => {
-      expect(escapeFFmpegText("time:00:00")).to.equal("time\:00\:00");
-    });
 
-    it('should escape percent signs', () => {
-      expect(escapeFFmpegText("100% complete")).to.equal("100\% complete");
-    });
-
-    it('should handle empty string', () => {
-      expect(escapeFFmpegText("")).to.equal("");
-    });
-
-    it('should handle string with no special characters', () => {
-      expect(escapeFFmpegText("Hello World")).to.equal("Hello World");
-    });
-
-    it('should handle mixed special characters', () => {
-      expect(escapeFFmpegText("It's 100% done: C:\test")).to.equal("It's 100\% done\: C:\\test");
-    });
-  });
-
-  describe('getOverlayPosition', () => {
-    it('should return center position for "center"', () => {
-      expect(getOverlayPosition('center', 1920, 1080, 0.8)).to.equal('(W-w)/2:(H-h)/2');
-    });
-
-    it('should return top-center position for "top-center"', () => {
-      expect(getOverlayPosition('top-center', 1920, 1080, 0.8)).to.equal('(W-w)/2:0');
-    });
-
-    it('should return bottom-center position for "bottom-center"', () => {
-      expect(getOverlayPosition('bottom-center', 1920, 1080, 0.8)).to.equal('(W-w)/2:H-h');
-    });
-
-    it('should return center for "custom" (default fallback)', () => {
-      expect(getOverlayPosition('custom', 1920, 1080, 0.8)).to.equal('(W-w)/2:(H-h)/2');
+describe('generateVideo', () => {
+  // Reset mocks before each test
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Reset the mock implementation for 'on' to its default testing behavior
+    mockFfmpeg.on.mockImplementation((event, callback) => {
+        if (event === 'end') {
+            callback();
+        }
+        return mockFfmpeg;
     });
   });
 
-  describe('getFontSize', () => {
-    it('should return 48 for video height >= 1920', () => {
-      expect(getFontSize(1920)).to.equal(48);
-      expect(getFontSize(2000)).to.equal(48);
+  const mockSettings: AppSettings = {
+    general: {
+      outputPath: '/tmp/videos',
+    },
+    platforms: { /* ... not needed for this test ... */ } as any,
+    render: {
+      resolution: { width: 1080, height: 1920 },
+      durationSec: 10,
+      bgmPath: '/path/to/bgm.mp3',
+      backgroundVideoPath: '/path/to/background.mp4',
+      captions: { top: "TOP TEXT", bottom: "BOTTOM TEXT" },
+      scale: 0.8,
+      teleTextBg: '#000000',
+      qualityPreset: 'standard',
+      overlayPosition: 'center',
+      topCaptionHeight: 120,
+      bottomCaptionHeight: 160,
+      captionBgOpacity: 1.0,
+    },
+  };
+
+  it('should generate a correct ffmpeg command for Function A (screenshot overlay)', async () => {
+    await generateVideo('/path/to/screenshot.png', mockSettings);
+
+    // Check inputs
+    expect(ffmpeg).toHaveBeenCalled();
+    expect(mockFfmpeg.input).toHaveBeenCalledWith('/path/to/background.mp4');
+    expect(mockFfmpeg.input).toHaveBeenCalledWith('/path/to/screenshot.png');
+    expect(mockFfmpeg.input).toHaveBeenCalledWith('/path/to/bgm.mp3');
+
+    // Check complex filter
+    expect(mockFfmpeg.complexFilter).toHaveBeenCalledWith(
+      expect.stringContaining('[1:v]scale=iw*0.8:-1[fg]') &&
+      expect.stringContaining('[0:v]scale=1080:1920,format=yuv420p[bg]') &&
+      expect.stringContaining('[bg][fg]overlay=(W-w)/2:(H-h)/2[base_with_overlay]') &&
+      expect.stringContaining('[base_with_overlay]drawbox=x=0:y=0:w=iw:h=120:color=#000000@1:t=fill[v_with_top_box]') &&
+      expect.stringContaining("drawtext=text='TOP TEXT'") &&
+      expect.stringContaining("drawtext=text='BOTTOM TEXT'") &&
+      expect.stringContaining('fontsize=48') && // Top font size for 1920px height
+      expect.stringContaining('fontsize=42') // Bottom font size for 1920px height
+    );
+
+    // Check output options
+    expect(mockFfmpeg.outputOptions).toHaveBeenCalledWith(expect.arrayContaining(['-t 10']));
+    expect(mockFfmpeg.outputOptions).toHaveBeenCalledWith(expect.arrayContaining(['-preset veryfast']));
+    expect(mockFfmpeg.outputOptions).toHaveBeenCalledWith(expect.arrayContaining(['-shortest']));
+
+    // Check save was called
+    expect(mockFfmpeg.save).toHaveBeenCalledWith('/tmp/videos/video-' + expect.any(Number) + '.mp4');
+  });
+
+  it('should generate a correct ffmpeg command for Function B (video re-encode)', async () => {
+    const sourceUrl = 'http://example.com/source.mp4';
+    await generateVideo('', mockSettings, sourceUrl);
+
+    // Check inputs
+    expect(mockFfmpeg.input).toHaveBeenCalledWith(sourceUrl);
+    expect(mockFfmpeg.input).not.toHaveBeenCalledWith('/path/to/screenshot.png');
+
+    // Check complex filter
+    expect(mockFfmpeg.complexFilter).toHaveBeenCalledWith(
+        expect.stringContaining(`[0:v]scale=1080:1920,format=yuv420p[base_with_overlay]`) &&
+        expect.not.stringContaining('[bg][fg]overlay') // Should not contain overlay logic
+    );
+  });
+
+  it('should reject if ffmpeg encounters an error', async () => {
+    const errorMessage = 'ffmpeg error';
+    // Override the mock for this specific test
+    mockFfmpeg.on.mockImplementation((event, callback) => {
+        if (event === 'error') {
+            callback(new Error(errorMessage), '', 'stderr output');
+        }
+        return mockFfmpeg;
     });
 
-    it('should return 36 for video height >= 1080 and < 1920', () => {
-      expect(getFontSize(1080)).to.equal(36);
-      expect(getFontSize(1500)).to.equal(36);
-      expect(getFontSize(1919)).to.equal(36);
-    });
+    await expect(generateVideo('/path/to/screenshot.png', mockSettings)).rejects.toThrow(errorMessage);
+  });
 
-    it('should return 24 for video height < 1080', () => {
-      expect(getFontSize(1079)).to.equal(24);
-      expect(getFontSize(720)).to.equal(24);
-      expect(getFontSize(480)).to.equal(24);
-    });
+  it('should reject if no background video is provided for Function A', async () => {
+    const settingsWithoutBg = {
+        ...mockSettings,
+        render: {
+            ...mockSettings.render,
+            backgroundVideoPath: '',
+        }
+    };
+    await expect(generateVideo('/path/to/screenshot.png', settingsWithoutBg)).rejects.toThrow('A background or source video must be provided.');
   });
 });

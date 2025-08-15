@@ -9,7 +9,14 @@ const electronAPI = {
   startMonitoring: () => ipcRenderer.invoke('start-monitoring'),
   stopMonitoring: () => ipcRenderer.invoke('stop-monitoring'),
   getStatus: () => ipcRenderer.invoke('get-status'),
-  onLogMessage: (callback: (message: string) => void) => ipcRenderer.on('log-message', (event, message) => callback(message)),
+  onLogMessage: (callback: (message: string) => void) => {
+    const handler = (event: any, message: any) => callback(message);
+    ipcRenderer.on('log-message', handler);
+    // Return a cleanup function
+    return () => {
+      ipcRenderer.removeListener('log-message', handler);
+    };
+  },
   // New: Credential Management
   setCredential: (service: string, account: string, password: string) => ipcRenderer.invoke('set-credential', service, account, password),
   getCredential: (service: string, account: string) => ipcRenderer.invoke('get-credential', service, account),

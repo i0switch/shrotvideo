@@ -1,6 +1,11 @@
 import log from 'electron-log';
 import type { AppSettings, Platform } from '../core/settings';
 import ytdlp from 'ytdlp-nodejs';
+import { chromium } from 'playwright';
+import { app } from 'electron';
+import path from 'path';
+
+export type ScrapeResult = { type: 'screenshot', path: string } | { type: 'video_url', url: string };
 
 function getPlatformUrl(platform: Platform, accountId: string): string {
   switch (platform) {
@@ -17,11 +22,45 @@ function getPlatformUrl(platform: Platform, accountId: string): string {
   }
 }
 
+async function scrapeX(accountId: string): Promise<string | null> {
+  log.info(`[x:${accountId}] Starting Playwright scrape...`);
+  const browser = await chromium.launch({ headless: true });
+  const page = await browser.newPage();
+  try {
+    const url = getPlatformUrl('x', accountId);
+    await page.goto(url, { waitUntil: 'networkidle' });
+
+    // Wait for the main timeline to be visible
+    await page.waitForSelector('section[role="region"] div[data-testid="cellInnerDiv"]');
+
+    // Find the first retweet. This selector is brittle and likely to change.
+    // It looks for a div that contains the "reposted" text.
+    const retweetLocator = page.locator('div[data-testid="cellInnerDiv"]:has-text("reposted")').first();
+
+    if (await retweetLocator.count() === 0) {
+      log.warn(`[x:${accountId}] No retweets found on the page.`);
+      return null;
+    }
+
+    const screenshotPath = path.join(app.getPath('temp'), `screenshot-x-${accountId}-${Date.now()}.png`);
+    await retweetLocator.screenshot({ path: screenshotPath });
+
+    log.info(`[x:${accountId}] Screenshot taken successfully: ${screenshotPath}`);
+    return screenshotPath;
+
+  } catch (error: any) {
+    log.error(`[x:${accountId}] Playwright scraping failed:`, error.message);
+    return null;
+  } finally {
+    await browser.close();
+  }
+}
+
 export async function scrapeAccount(
   platform: Platform,
   accountId: string,
   settings: AppSettings,
-): Promise<string | null> {
+): Promise<ScrapeResult | null> {
   log.info(`[${platform}:${accountId}] Starting scrape...`);
 
   if (platform === 'tiktok' || platform === 'youtube' || platform === 'instagram') {
@@ -33,21 +72,13 @@ export async function scrapeAccount(
         playlistItems: '1',
       });
 
-      if (video && video.url) {
-        log.info(`[${platform}:${accountId}] Found video URL: ${video.url}`);
-        return video.url;
+      const url = video.url || (video as any).webpage_url;
+      if (url) {
+        log.info(`[${platform}:${accountId}] Found video URL: ${url}`);
+        return { type: 'video_url', url };
       } else {
-        log.warn(`[${platform}:${accountId}] yt-dlp did not return a video URL directly.`);
-        const videoFromWebpage = (video as any).webpage_url;
-        if (videoFromWebpage) {
-            log.info(`[${platform}:${accountId}] Found webpage URL, attempting to re-run yt-dlp on it: ${videoFromWebpage}`);
-            const directVideo = await ytdlp(videoFromWebpage, { getUrl: true });
-            if (directVideo) {
-                log.info(`[${platform}:${accountId}] Found direct video URL: ${directVideo}`);
-                return directVideo.toString();
-            }
-        }
-        return null;
+         log.warn(`[${platform}:${accountId}] yt-dlp did not return a usable URL.`);
+         return null;
       }
     } catch (error: any) {
       log.error(`[${platform}:${accountId}] yt-dlp failed:`, error.message);
@@ -56,7 +87,10 @@ export async function scrapeAccount(
   }
 
   if (platform === 'x') {
-    log.warn(`[${platform}:${accountId}] X scraping is temporarily disabled.`);
+    const screenshotPath = await scrapeX(accountId);
+    if (screenshotPath) {
+      return { type: 'screenshot', path: screenshotPath };
+    }
     return null;
   }
 

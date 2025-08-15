@@ -7,16 +7,16 @@
   "homepage": "./",
   "main": "dist/electron/main.js",
   "scripts": {
-  "dev": "vite",
-  "start": "npm run build:electron && cross-env NODE_ENV=development concurrently \"npm:dev\" \"wait-on http://localhost:8080 && electron .\"",
-  "build": "npm run build:electron && tsc && vite build",
-  "build:electron": "tsc -p tsconfig.electron.json",
-  "lint": "eslint .",
-  "preview": "vite preview",
-  "test": "vitest",
-  "test:unit": "vitest run",
-  "test:e2e": "playwright test",
-  "dist": "electron-builder"
+    "dev": "vite",
+    "start": "npm run build:electron && cross-env NODE_ENV=development concurrently \"npm:dev\" \"wait-on http://localhost:8080 && electron .\"",
+    "build": "npm run build:electron && tsc && vite build",
+    "build:electron": "tsc -p tsconfig.electron.json",
+    "lint": "eslint .",
+    "preview": "vite preview",
+    "test": "vitest",
+    "test:unit": "vitest run",
+    "test:e2e": "playwright test",
+    "dist": "electron-builder"
   },
   "build": {
     "appId": "com.gemini.shortvideotool",
@@ -103,6 +103,7 @@
     "tailwind-merge": "^2.6.0",
     "tailwindcss-animate": "^1.0.7",
     "vaul": "^0.9.9",
+    "ytdlp-nodejs": "^2.3.4",
     "zod": "^3.25.76"
   },
   "devDependencies": {
