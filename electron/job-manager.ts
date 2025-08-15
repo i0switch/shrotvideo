@@ -56,7 +56,7 @@ export class JobManager {
           startTime: savedPlatformState.startTime,
           // timer will be set when job actually starts
         });
-        if (status === 'running') { // If it was running, log that it needs to be restarted
+        if (savedPlatformState.status === 'running') { // If it was running, log that it needs to be restarted
           log.info(`Previous job for ${platform} was running. Will restart on app start.`);
         }
       }

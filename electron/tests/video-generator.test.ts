@@ -93,7 +93,7 @@ describe('generateVideo', () => {
     expect(mockFfmpeg.outputOptions).toHaveBeenCalledWith(expect.arrayContaining(['-shortest']));
 
     // Check save was called
-    expect(mockFfmpeg.save).toHaveBeenCalledWith('/tmp/videos/video-' + expect.any(Number) + '.mp4');
+    expect(mockFfmpeg.save).toHaveBeenCalledWith(expect.stringMatching(/\/tmp\/videos\/video-\d+\.mp4/));
   });
 
   it('should generate a correct ffmpeg command for Function B (video re-encode)', async () => {

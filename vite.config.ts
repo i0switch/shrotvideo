@@ -1,20 +1,18 @@
 /// <reference types="vitest" />
 import { defineConfig } from "vite";
-// import react from "@vitejs/plugin-react-swc"; // Removed
-import path from "path"; // Added
-// import { componentTagger } from "lovable-tagger";
+import react from "@vitejs/plugin-react-swc";
+import path from "path";
+import { componentTagger } from "lovable-tagger";
 
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => ({
-  // base: './', // Removed this line
   server: {
-    host: "::",
+    host: "127.0.0.1",
     port: 8080,
   },
   plugins: [
-    // Removed react plugin
-    // mode === 'development' &&
-    // componentTagger(), // Temporarily disable lovable-tagger
+    react(),
+    mode === 'development' && componentTagger(),
   ].filter(Boolean),
   resolve: {
     alias: {
@@ -31,6 +29,5 @@ export default defineConfig(({ mode }) => ({
     include: ['electron/tests/**/*.test.ts'], // Only run unit tests from the electron folder
     exclude: ['src/tests/e2e-app.test.ts'], // Explicitly exclude E2E tests from vitest runner
     setupFiles: [],
-    // No need for custom transform, vitest handles TS
   },
 }));

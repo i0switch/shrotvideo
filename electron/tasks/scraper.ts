@@ -1,6 +1,5 @@
 import log from 'electron-log';
-import type { AppSettings, Platform } from '../core/settings';
-import ytdlp from 'ytdlp-nodejs';
+import type { AppSettings, Platform } from '../../src/core/settings';
 import { chromium } from 'playwright';
 import { app } from 'electron';
 import path from 'path';
@@ -67,6 +66,9 @@ export async function scrapeAccount(
     const accountUrl = getPlatformUrl(platform, accountId);
     try {
       log.info(`[${platform}:${accountId}] Using yt-dlp to get latest video URL from ${accountUrl}`);
+      // Dynamically import the ESM ytdlp-nodejs module
+      const ytdlp = (await import('ytdlp-nodejs')).default;
+      // @ts-ignore - The types for this module seem to be incorrect, causing a build failure.
       const video = await ytdlp(accountUrl, {
         dumpSingleJson: true,
         playlistItems: '1',

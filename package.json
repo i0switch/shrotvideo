@@ -2,6 +2,7 @@
   "name": "vite_react_shadcn_ts",
   "private": true,
   "version": "0.0.0",
+  "type": "module",
   "description": "アダアフィ用ショート動画支援アプリ（仮）",
   "author": "Your Name <your.email@example.com>",
   "homepage": "./",
@@ -9,14 +10,16 @@
   "scripts": {
     "dev": "vite",
     "start": "npm run build:electron && cross-env NODE_ENV=development concurrently \"npm:dev\" \"wait-on http://localhost:8080 && electron .\"",
-    "build": "npm run build:electron && tsc && vite build",
+    "build": "npm run clean && npm run build:electron && tsc && vite build",
     "build:electron": "tsc -p tsconfig.electron.json",
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest",
     "test:unit": "vitest run",
     "test:e2e": "playwright test",
-    "dist": "electron-builder"
+    "dist": "electron-builder",
+    "package": "npm run build && npm run dist",
+    "clean": "rm -rf dist dist-electron"
   },
   "build": {
     "appId": "com.gemini.shortvideotool",
@@ -122,6 +125,7 @@
     "@types/node": "^22.17.1",
     "@types/react": "^18.3.23",
     "@types/react-dom": "^18.3.7",
+    "@vitejs/plugin-react-swc": "^4.0.0",
     "autoprefixer": "^10.4.21",
     "concurrently": "^9.2.0",
     "cross-env": "^10.0.0",

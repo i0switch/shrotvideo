@@ -24,6 +24,19 @@ const Setup = () => {
   };
 
   const runSetup = async () => {
+    // If not in an Electron environment, skip the checks and go straight to completed.
+    if (!window.electronAPI) {
+      addMessage("非Electron環境で実行中。依存関係チェックをスキップします。");
+      setSetupStatus("completed");
+      setProgress(100);
+      setChecks({
+        node: { status: "success", message: "スキップ" },
+        npm: { status: "success", message: "スキップ" },
+        ffmpeg: { status: "success", message: "スキップ" },
+      });
+      return;
+    }
+
     setSetupStatus("checking");
     setMessages([]);
     setProgress(0);
@@ -66,10 +79,9 @@ const Setup = () => {
   };
 
   useEffect(() => {
-    if (setupStatus === "idle") {
-      runSetup();
-    }
-  }, [setupStatus]);
+    // The runSetup is now called inside this useEffect hook
+    runSetup();
+  }, []);
 
   const getStatusIcon = (status: string) => {
     if (status === "success") return <CheckCircle className="text-green-500" />;

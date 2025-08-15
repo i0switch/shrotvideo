@@ -14,16 +14,20 @@ const Index = () => {
   const [logs, setLogs] = useState<string[]>([]);
 
   useEffect(() => {
-    const unsubscribe = window.electronAPI.onLogMessage((message: string) => {
-      // Keep the log array from getting too large in memory
-      setLogs((prevLogs) => [...prevLogs.slice(-200), message]);
-    });
-    // Cleanup the listener when the component unmounts
-    return () => {
-      if (unsubscribe) {
-        unsubscribe();
-      }
-    };
+    // Only subscribe to logs if the electronAPI is available.
+    if (window.electronAPI && typeof window.electronAPI.onLogMessage === 'function') {
+      const unsubscribe = window.electronAPI.onLogMessage((message: string) => {
+        // Keep the log array from getting too large in memory
+        setLogs((prevLogs) => [...prevLogs.slice(-200), message]);
+      });
+
+      // Cleanup the listener when the component unmounts
+      return () => {
+        if (unsubscribe) {
+          unsubscribe();
+        }
+      };
+    }
   }, []);
 
   const clearLogs = () => setLogs([]);
