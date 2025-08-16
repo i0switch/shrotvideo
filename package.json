@@ -6,7 +6,7 @@
   "description": "アダアフィ用ショート動画支援アプリ（仮）",
   "author": "Your Name <your.email@example.com>",
   "homepage": "./",
-  "main": "dist/electron/main.js",
+  "main": "dist\\electron\\main.js",
   "scripts": {
     "dev": "vite",
     "start": "npm run build:electron && cross-env NODE_ENV=development concurrently \"npm:dev\" \"wait-on http://localhost:8080 && electron .\"",
