@@ -19,7 +19,7 @@
     "test:e2e": "playwright test",
     "dist": "electron-builder",
     "package": "npm run build && npm run dist",
-    "clean": "rimraf dist dist-electron"
+    "clean": "rimraf dist release"
   },
   "build": {
     "appId": "com.gemini.shortvideotool",
@@ -28,7 +28,8 @@
       "output": "release"
     },
     "files": [
-      "dist/**/*"
+      "dist/**/*",
+      "package.json"
     ],
     "mac": {
       "target": [
