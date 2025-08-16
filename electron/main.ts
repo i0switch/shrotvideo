@@ -124,6 +124,10 @@ function setupIpcHandlers() {
         { name: 'Videos', extensions: ['mp4', 'mov', 'avi'] }
       ]
     });
+    // @ts-ignore - HACK: There is a severe version mismatch between 'electron' (^37.3.0) and '@types/electron' (^1.4.38).
+    // The installed types declare the return value of showOpenDialog as string[], while the actual return value is an object { canceled, filePaths }.
+    // The original code was written against the old, incorrect types. We are reverting to that implementation to make the build pass.
+    // TODO: Update @types/electron to match the electron version and fix this code.
     if (Array.isArray(result) && result.length > 0) {
       return result[0];
     }

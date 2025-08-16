@@ -4,6 +4,11 @@ import path from 'path';
 import log from 'electron-log';
 import type { AppSettings } from '../../src/core/settings.js';
 
+// Utility to normalize path separators for cross-platform compatibility
+function normalizePath(p: string): string {
+  return p.replace(/\\/g, '/');
+}
+
 // Function to safely escape text for ffmpeg drawtext filter
 function escapeFFmpegText(text: string): string {
   if (typeof text !== 'string') return '';
@@ -71,7 +76,8 @@ export function generateVideo(
   return new Promise((resolve, reject) => {
     const { render, general } = settings;
     const outputFileName = `video-${Date.now()}.mp4`;
-    const outputPath = path.join(general.outputPath, outputFileName);
+    // Note: outputPath is created with path.join, which is OS-specific. We normalize it for ffmpeg.
+    const outputPath = normalizePath(path.join(general.outputPath, outputFileName));
 
     log.info(`Starting video generation. Output: ${outputPath}`);
 
@@ -95,11 +101,12 @@ export function generateVideo(
     if (!inputVideoPath) {
         return reject(new Error('A background or source video must be provided.'));
     }
-    ffmpegCommand.input(inputVideoPath);
+    // Normalize path if it's not a URL
+    ffmpegCommand.input(inputVideoPath.startsWith('http') ? inputVideoPath : normalizePath(inputVideoPath));
 
     // Screenshot input (only for Function A)
     if (!sourceVideoUrl && screenshotPath) {
-        ffmpegCommand.input(screenshotPath);
+        ffmpegCommand.input(normalizePath(screenshotPath));
         const screenshotIndex = 1; // screenshot is the second input
         complexFilter.push(
             `[${screenshotIndex}:v]scale=iw*${render.scale}:-1[fg]`,
@@ -125,7 +132,7 @@ export function generateVideo(
 
     // Add BGM if specified
     if (render.bgmPath) {
-        ffmpegCommand.input(render.bgmPath);
+        ffmpegCommand.input(normalizePath(render.bgmPath));
         audioMapIndex++; // BGM is now the next audio stream
     }
 
