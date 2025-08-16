@@ -6,7 +6,7 @@
   "description": "アダアフィ用ショート動画支援アプリ（仮）",
   "author": "Your Name <your.email@example.com>",
   "homepage": "./",
-  "main": "dist\\electron\\main.js",
+  "main": "dist/electron/main.js",
   "scripts": {
     "dev": "vite",
     "start": "npm run build:electron && cross-env NODE_ENV=development concurrently \"npm:dev\" \"wait-on http://localhost:8080 && electron .\"",
@@ -25,13 +25,10 @@
     "appId": "com.gemini.shortvideotool",
     "productName": "アダアフィ用ショート動画支援アプリ（仮）",
     "directories": {
-      "output": "dist"
+      "output": "release"
     },
     "files": [
-      "dist/electron/**",
-      "dist/renderer/**",
-      "node_modules/**",
-      "package.json"
+      "dist/**/*"
     ],
     "mac": {
       "target": [
@@ -143,6 +140,7 @@
     "mocha": "^11.7.1",
     "playwright": "^1.54.2",
     "postcss": "^8.5.6",
+    "rimraf": "^6.0.1",
     "tailwindcss": "^3.4.17",
     "ts-jest": "^29.4.1",
     "ts-node": "^10.9.2",
