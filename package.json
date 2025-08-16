@@ -28,7 +28,7 @@
       "output": "release"
     },
     "files": [
-      "dist/**/*",
+      "dist/",
       "package.json"
     ],
     "mac": {
