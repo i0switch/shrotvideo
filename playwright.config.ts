@@ -27,14 +27,13 @@ export default defineConfig({
 
   projects: [
     {
-      name: 'Chromium',
+      name: 'Chromium-WebServer',
+      testMatch: /e2e-app\.test\.ts/,
       use: { ...devices['Desktop Chrome'] },
     },
-    // Electron project is disabled for now as it requires more complex setup
-    // to launch the electron app directly. Testing against chromium is sufficient.
-    // {
-    //   name: 'Electron',
-    //   use: { ...devices['Desktop Chrome'] },
-    // },
+    {
+      name: 'Electron-Main',
+      testMatch: /e2e-login\.test\.ts/,
+    },
   ],
 });

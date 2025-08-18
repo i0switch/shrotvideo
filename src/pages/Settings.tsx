@@ -9,7 +9,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "@/components/ui/use-toast";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import type { Platform, Account } from "@/core/settings";
+import type { Platform, Account } from "@/common/settings";
 import { Trash2 } from "lucide-react";
 import { useState, useEffect } from "react"; // Add useEffect
 
@@ -21,14 +21,6 @@ const Settings = () => {
     instagram: '',
     youtube: '',
   });
-
-  // New: State for login credentials
-  const [loginCredentials, setLoginCredentials] = useState<Record<Platform, { username: string; password: string }>>({
-    x: { username: '', password: '' },
-    tiktok: { username: '', password: '' },
-    instagram: { username: '', password: '' },
-    youtube: { username: '', password: '' },
-  });
   const [loggedInStatus, setLoggedInStatus] = useState<Record<Platform, boolean>>({
     x: false,
     tiktok: false,
@@ -36,8 +28,43 @@ const Settings = () => {
     youtube: false,
   });
 
+  // New function to check login status
+  const checkLoginStatus = async (platform: Platform) => {
+    if (!window.electronAPI) return;
+    const status = await window.electronAPI.checkLoginStatus(platform);
+    setLoggedInStatus(prev => ({ ...prev, [platform]: status }));
+  };
+
+  // New login handler
+  const handleBrowserLogin = async (platform: Platform) => {
+    if (!window.electronAPI) return;
+    try {
+        const success = await window.electronAPI.loginWithBrowser(platform);
+        if (success) {
+        toast({ title: "ログインに成功しました", description: `${platform}のセッション情報を保存しました。` });
+        } else {
+        toast({ title: "ログインがキャンセルされました", description: "ログインが完了しなかったか、手動でキャンセルされました。", variant: "default" });
+        }
+    } catch (e: any) {
+        toast({ title: "ログインエラー", description: e.message, variant: "destructive" });
+    }
+    await checkLoginStatus(platform); // Re-check status after attempt
+  };
+
+  // New logout handler
+  const handleLogout = async (platform: Platform) => {
+    if (!window.electronAPI) return;
+    const success = await window.electronAPI.logout(platform);
+    if (success) {
+      toast({ title: "ログアウトしました" });
+    } else {
+      toast({ title: "ログアウトに失敗しました", variant: "destructive" });
+    }
+    await checkLoginStatus(platform); // Re-check status
+  };
 
   const handleSelectFile = async (key: 'bgmPath' | 'backgroundVideoPath') => {
+    if (!window.electronAPI) return;
     const result = await window.electronAPI.openFileDialog();
     if (result && settings) {
       updateSettings({ render: { ...settings.render, [key]: result } });
@@ -46,6 +73,7 @@ const Settings = () => {
   };
 
   const handleSelectDirectory = async () => {
+    if (!window.electronAPI) return;
     const result = await window.electronAPI.openDirectoryDialog();
     if (result && settings) {
       updateSettings({ general: { ...settings.general, outputPath: result } });
@@ -105,76 +133,18 @@ const Settings = () => {
     }
   };
 
-  // New: Credential handling functions
-  const getService = (platform: Platform) => `com.gemini.shortvideotool.${platform}`;
-
-  const loadCredential = async (platform: Platform) => {
-    const service = getService(platform);
-    const username = loginCredentials[platform].username; // Use the username from state
-    if (!username) {
-      setLoggedInStatus(prev => ({ ...prev, [platform]: false }));
-      return;
-    }
-    const password = await window.electronAPI.getCredential(service, username);
-    if (password) {
-      setLoggedInStatus(prev => ({ ...prev, [platform]: true }));
-      // Do not set password to state for security reasons
-    } else {
-      setLoggedInStatus(prev => ({ ...prev, [platform]: false }));
-    }
-  };
-
-  const handleLogin = async (platform: Platform) => {
-    const { username, password } = loginCredentials[platform];
-    if (!username || !password) {
-      toast({ title: "エラー", description: "ユーザー名とパスワードを入力してください。", variant: "destructive" });
-      return;
-    }
-    const service = getService(platform);
-    const success = await window.electronAPI.setCredential(service, username, password);
-    if (success) {
-      toast({ title: "ログイン情報が保存されました" });
-      setLoggedInStatus(prev => ({ ...prev, [platform]: true }));
-      // Clear password from state after saving
-      setLoginCredentials(prev => ({ ...prev, [platform]: { ...prev[platform], password: '' } }));
-    } else {
-      toast({ title: "エラー", description: "ログイン情報の保存に失敗しました。", variant: "destructive" });
-      setLoggedInStatus(prev => ({ ...prev, [platform]: false }));
-    }
-  };
-
-  const handleLogout = async (platform: Platform) => {
-    const { username } = loginCredentials[platform];
-    if (!username) {
-      toast({ title: "エラー", description: "ログアウトするアカウントが指定されていません。", variant: "destructive" });
-      return;
-    }
-    const service = getService(platform);
-    const success = await window.electronAPI.deleteCredential(service, username);
-    if (success) {
-      toast({ title: "ログイン情報が削除されました" });
-      setLoggedInStatus(prev => ({ ...prev, [platform]: false }));
-      setLoginCredentials(prev => ({ ...prev, [platform]: { username: '', password: '' } }));
-    } else {
-      toast({ title: "エラー", description: "ログイン情報の削除に失敗しました。", variant: "destructive" });
-    }
-  };
-
-  // Load credentials when platform tab is selected
+  // Effect to check status on tab change
   const handleTabChange = (value: string) => {
     const platform = value as Platform;
     if (['x', 'tiktok', 'instagram', 'youtube'].includes(platform)) {
-      // Assuming the first account in the list is the primary one for login status check
-      const primaryAccount = settings?.platforms[platform].accounts[0]?.id;
-      if (primaryAccount) {
-        setLoginCredentials(prev => ({ ...prev, [platform]: { ...prev[platform], username: primaryAccount } }));
-        loadCredential(platform);
-      } else {
-        setLoggedInStatus(prev => ({ ...prev, [platform]: false }));
-        setLoginCredentials(prev => ({ ...prev, [platform]: { username: '', password: '' } }));
-      }
+      checkLoginStatus(platform);
     }
   };
+
+  // Effect to check initial status on load
+  useEffect(() => {
+    checkLoginStatus('x');
+  }, []);
 
 
   if (isLoading) {
@@ -273,56 +243,37 @@ const Settings = () => {
           </CardFooter>
         </Card>
 
-        {/* New: Login Information Card */}
+        {/* New: Browser-based Login Card */}
         <Card>
           <CardHeader>
-            <CardTitle>{name} ログイン情報</CardTitle>
+            <CardTitle>{name} ログイン</CardTitle>
             <CardDescription>
-              {name}へのログイン情報を保存します。パスワードは安全に暗号化されます。
+              ブラウザ経由で{name}にログインし、セッション情報を安全に保存します。
             </CardDescription>
           </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor={`${platform}-login-username`}>ユーザー名 / アカウントID</Label>
-              <Input
-                id={`${platform}-login-username`}
-                value={loginCredentials[platform].username}
-                onChange={(e) => setLoginCredentials(prev => ({ ...prev, [platform]: { ...prev[platform], username: e.target.value } }))}
-                placeholder="ログインに使用するユーザー名またはアカウントID"
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor={`${platform}-login-password`}>パスワード / トークン</Label>
-              <Input
-                id={`${platform}-login-password`}
-                type="password" // Use type="password" for security
-                value={loginCredentials[platform].password}
-                onChange={(e) => setLoginCredentials(prev => ({ ...prev, [platform]: { ...prev[platform], password: e.target.value } }))}
-                placeholder="ログインに使用するパスワードまたはトークン"
-              />
-            </div>
-            <div className="flex items-center justify-between rounded-lg border p-3 shadow-sm">
-              <div className="space-y-0.5">
-                <Label>ログインステータス</Label>
-                <p className="text-xs text-muted-foreground">
-                  現在のログイン状態:{" "}
-                  {loggedInStatus[platform] ? (
-                    <span className="text-green-500">ログイン済み</span>
-                  ) : (
-                    <span className="text-red-500">未ログイン</span>
-                  )}
-                </p>
-              </div>
-              <div className="flex gap-2">
-                <Button onClick={() => handleLogin(platform)} disabled={loggedInStatus[platform]}>
-                  ログイン
-                </Button>
-                <Button variant="destructive" onClick={() => handleLogout(platform)} disabled={!loggedInStatus[platform]}>
-                  ログアウト
-                </Button>
-              </div>
-            </div>
+          <CardContent className="flex flex-col space-y-4">
+            <Button onClick={() => handleBrowserLogin(platform)} className="w-full">
+              {name}でログイン
+            </Button>
+             <p className="text-xs text-muted-foreground">
+                現在のログイン状態:{" "}
+                {loggedInStatus[platform] ? (
+                  <span className="text-green-500 font-semibold">ログイン済み</span>
+                ) : (
+                  <span className="text-red-500 font-semibold">未ログイン</span>
+                )}
+              </p>
           </CardContent>
+          <CardFooter>
+             <Button
+                variant="destructive"
+                className="w-full"
+                onClick={() => handleLogout(platform)}
+                disabled={!loggedInStatus[platform]}
+              >
+                ログアウト
+              </Button>
+          </CardFooter>
         </Card>
       </TabsContent>
     );

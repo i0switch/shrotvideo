@@ -1,5 +1,5 @@
 import log from 'electron-log';
-import type { AppSettings, Platform } from '../../src/core/settings';
+import type { AppSettings, Platform } from '#common/settings.js';
 import { chromium } from 'playwright';
 import { app } from 'electron';
 import path from 'path';

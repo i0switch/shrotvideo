@@ -1,12 +1,17 @@
 import { app, BrowserWindow, ipcMain, dialog } from 'electron';
 import { exec } from 'child_process';
-import path from 'path';
-// import { fileURLToPath } from 'url';
+import path, { dirname } from 'path';
+import { fileURLToPath } from 'url';
 import Store from 'electron-store';
-import type { AppSettings } from '../src/core/settings.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+import type { AppSettings } from '#common/settings.js';
 import { JobManager } from './job-manager.js';
 import log from 'electron-log';
-import * as keytar from 'keytar'; // Add this line
+import { loginWithBrowser, logout, checkLoginStatus } from './auth.js';
+import type { Platform } from '#common/settings.js';
+
 
 // Configure logger
 log.initialize();
@@ -134,38 +139,17 @@ function setupIpcHandlers() {
     return null;
   });
 
-  // New: Credential Management Handlers
-  ipcMain.handle('set-credential', async (event, service: string, account: string, password: string) => {
-    try {
-      await keytar.setPassword(service, account, password);
-      log.info(`Credential set for service: ${service}, account: ${account}`);
-      return true;
-    } catch (error) {
-      log.error(`Failed to set credential for service: ${service}, account: ${account}`, error);
-      return false;
-    }
+  // New: Browser-based Authentication Handlers
+  ipcMain.handle('login-with-browser', async (event, platform: Platform) => {
+    return loginWithBrowser(platform);
   });
 
-  ipcMain.handle('get-credential', async (event, service: string, account: string) => {
-    try {
-      const password = await keytar.getPassword(service, account);
-      log.info(`Credential retrieved for service: ${service}, account: ${account}`);
-      return password;
-    } catch (error) {
-      log.error(`Failed to get credential for service: ${service}, account: ${account}`, error);
-      return null;
-    }
+  ipcMain.handle('logout', async (event, platform: Platform) => {
+    return logout(platform);
   });
 
-  ipcMain.handle('delete-credential', async (event, service: string, account: string) => {
-    try {
-      const result = await keytar.deletePassword(service, account);
-      log.info(`Credential deleted for service: ${service}, account: ${account}. Result: ${result}`);
-      return result;
-    } catch (error) {
-      log.error(`Failed to delete credential for service: ${service}, account: ${account}`, error);
-      return false;
-    }
+  ipcMain.handle('check-login-status', async (event, platform: Platform) => {
+    return checkLoginStatus(platform);
   });
 
   // Job Manager Handlers
@@ -243,7 +227,7 @@ const createWindow = () => {
     width: 1200,
     height: 800,
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
+      preload: path.join(__dirname, '../preload.js'),
     },
   });
 
@@ -253,7 +237,7 @@ const createWindow = () => {
   if (process.env.NODE_ENV === 'development') {
     mainWindow.loadURL(devServerURL);
   } else {
-    mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
+    mainWindow.loadURL(`file://${path.join(__dirname, '../renderer/index.html')}`);
   }
 
   // Open the DevTools.

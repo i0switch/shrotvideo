@@ -2,7 +2,7 @@ import ffmpeg from 'fluent-ffmpeg';
 import { app } from 'electron';
 import path from 'path';
 import log from 'electron-log';
-import type { AppSettings } from '../../src/core/settings.js';
+import type { AppSettings } from '#common/settings.js';
 
 // Utility to normalize path separators for cross-platform compatibility
 function normalizePath(p: string): string {

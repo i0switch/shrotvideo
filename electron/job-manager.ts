@@ -2,7 +2,7 @@ import PQueue from 'p-queue';
 import pRetry from 'p-retry';
 import Store from 'electron-store';
 import log from 'electron-log';
-import type { AppSettings, Platform, Account } from '../src/core/settings.js';
+import type { AppSettings, Platform, Account } from '#common/settings.js';
 import { scrapeAccount, ScrapeResult } from './tasks/scraper.js';
 import { generateVideo } from './tasks/video-generator.js';
 

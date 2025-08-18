@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { generateVideo } from '../tasks/video-generator.js';
-import type { AppSettings } from '../../src/core/settings';
+import type { AppSettings } from '#common/settings.js';
 import ffmpeg from 'fluent-ffmpeg';
 
 // Mock fluent-ffmpeg

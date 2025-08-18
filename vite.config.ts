@@ -22,6 +22,7 @@ export default defineConfig(({ mode }) => ({
   build: {
     outDir: 'dist/renderer',
     emptyOutDir: true,
+    base: './',
   },
   test: {
     globals: true,

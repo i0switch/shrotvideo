@@ -1,8 +1,8 @@
 {
   "compilerOptions": {
     "target": "ES2020",
-    "module": "CommonJS",
-    "moduleResolution": "node", // Use "node" for CommonJS module resolution
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext", // Use "node" for CommonJS module resolution
     "outDir": "dist/electron",
     "strict": true,
     "esModuleInterop": true,
@@ -18,11 +18,12 @@
     "esm": true
   },
   "include": [
-    "electron/main.ts",
-    "electron/job-manager.ts",
-    "electron/tasks/scraper.ts",
-    "electron/tasks/video-generator.ts",
-    "electron/preload.ts",
-    "electron/tests/**/*.ts"
+    "electron/**/*.ts",
+    "common/**/*.ts"
+  ],
+  "exclude": [
+    "electron/tests",
+    "**/*.test.ts",
+    "electron/preload.ts"
   ]
 }

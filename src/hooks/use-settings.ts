@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import type { AppSettings } from '@/core/settings'; // Corrected import path
+import type { AppSettings } from '@/common/settings'; // Corrected import path
 import mergeWith from 'lodash.mergewith';
 
 const SETTINGS_QUERY_KEY = ['settings'];
