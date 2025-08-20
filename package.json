@@ -10,6 +10,7 @@
   "scripts": {
     "dev": "vite --strictPort",
   "start": "npm run build:electron && cross-env NODE_ENV=development concurrently \"npm:dev\" \"wait-on http://127.0.0.1:5173 && electron .\"",
+  "start:preview": "npm run build:electron && cross-env NODE_ENV=development PREVIEW_ON_START=1 PREVIEW_FILE=test-data/background.mp4 PREVIEW_EXIT=1 concurrently \"npm:dev\" \"wait-on http://127.0.0.1:5173 && electron .\"",
   "build": "npm run clean && npm run build:electron && tsc && vite build",
   "build:electron": "tsc -p tsconfig.electron.json && node scripts/postbuild-electron.cjs",
     "lint": "eslint .",

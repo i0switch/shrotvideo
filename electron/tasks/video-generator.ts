@@ -1,4 +1,5 @@
 import ffmpeg from 'fluent-ffmpeg';
+import ffmpegStatic from 'ffmpeg-static';
 import { app } from 'electron';
 import path from 'path';
 import log from 'electron-log';
@@ -140,6 +141,13 @@ export function generateVideo(
   sourceVideoUrl?: string
 ): Promise<string> {
   return new Promise((resolve, reject) => {
+    // Ensure ffmpeg binary is configured (fallback to PATH if not available)
+    try {
+      const bin = (ffmpegStatic as unknown as string) || '';
+      if (bin) {
+        (ffmpeg as unknown as { setFfmpegPath: (p: string) => void }).setFfmpegPath(bin);
+      }
+    } catch { /* ignore */ }
     const { render: rawRender, general } = settings;
     const videoWidth = toNumberOr(rawRender?.resolution?.width, 1080);
     const videoHeight = toNumberOr(rawRender?.resolution?.height, 1920);
@@ -214,7 +222,8 @@ export function generateVideo(
       log.warn('[video-generator] no fontfile found. Skipping drawtext to avoid fontconfig crash.');
     }
 
-    const filterGraph = complexFilter.join(', ');
+  // Use semicolons to separate independent filter chains
+  const filterGraph = complexFilter.join('; ');
     log.info('[video-generator] filterGraph:', filterGraph);
     ffmpegCommand.complexFilter(filterGraph);
 
@@ -226,19 +235,20 @@ export function generateVideo(
       nextInputIndex += 1;
     }
 
-    ffmpegCommand.outputOptions(
-      `-t ${durationSec}`,
-      '-c:v libx264',
-      `-preset ${getFFmpegPreset(qualityPreset)}`,
-      '-pix_fmt yuv420p',
-      '-c:a aac',
-      '-shortest'
-    );
+    ffmpegCommand
+      .duration(durationSec)
+      .videoCodec('libx264')
+      .outputOptions([
+        '-preset', getFFmpegPreset(qualityPreset),
+        '-pix_fmt', 'yuv420p',
+        '-c:a', 'aac',
+        '-shortest'
+      ]);
 
     // Map audio: background/source video and optional BGM
-    ffmpegCommand.outputOptions('-map 0:a?');
+    ffmpegCommand.outputOptions(['-map', '0:a?']);
     if (bgmInputIndex !== undefined) {
-      ffmpegCommand.outputOptions(`-map ${bgmInputIndex}:a?`);
+      ffmpegCommand.outputOptions(['-map', `${bgmInputIndex}:a?`]);
     }
 
     ffmpegCommand

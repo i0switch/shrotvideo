@@ -4,6 +4,7 @@ import './login';
 import './dialogs';
 import path from 'path';
 import fs from 'node:fs/promises';
+import { existsSync as existsSyncFS, mkdirSync } from 'node:fs';
 // import { fileURLToPath } from 'url';
 import Store from 'electron-store';
 import type { AppSettings } from '../src/core/settings.js';
@@ -474,15 +475,48 @@ app.on('ready', () => {
   // Optional: auto-generate a short preview on start for testing
   try {
     const previewOnStart = process.env.PREVIEW_ON_START === '1';
-    const previewFile = process.env.PREVIEW_FILE || '';
+    // Resolve PREVIEW_FILE robustly
+    let previewFile = process.env.PREVIEW_FILE || '';
+    try {
+      if (previewFile) {
+        if (!path.isAbsolute(previewFile)) {
+          // Resolve relative to CWD first (workspace root in dev), then dist root
+          const appRoot = path.resolve(__dirname, '..');
+          const relCwd = path.resolve(process.cwd(), previewFile);
+          const relDist = path.resolve(appRoot, previewFile);
+          if (existsSyncFS(relCwd)) previewFile = relCwd;
+          else if (existsSyncFS(relDist)) previewFile = relDist;
+          else previewFile = relCwd; // fallback to CWD
+        }
+        log.info('[auto-preview] PREVIEW_FILE:', previewFile);
+      }
+    } catch { /* ignore */ }
+    const previewExit = process.env.PREVIEW_EXIT === '1';
     if (previewOnStart && previewFile) {
       const s = getAllSettings();
       const settings: AppSettings = JSON.parse(JSON.stringify(s));
-      if (s.general.testOutputPath) settings.general.outputPath = s.general.testOutputPath;
+      // Force auto-preview outputs into workspace test-results/auto-preview for easy verification
+      try {
+        const apDir = path.join(process.cwd(), 'test-results', 'auto-preview');
+        mkdirSync(apDir, { recursive: true });
+        settings.general.outputPath = apDir;
+      } catch { /* ignore */ }
       settings.render.durationSec = Math.min(2, Math.max(1, settings.render.durationSec || 1));
       generateVideo('', settings, previewFile)
-        .then((out) => log.info('[auto-preview] generated:', out))
-        .catch((e) => log.error('[auto-preview] failed:', (e as Error)?.message || String(e)));
+        .then((out) => {
+          log.info('[auto-preview] generated:', out);
+          console.info('[auto-preview] generated:', out);
+          if (previewExit) {
+            try { app.quit(); } catch { /* ignore */ }
+          }
+        })
+        .catch((e) => {
+          log.error('[auto-preview] failed:', (e as Error)?.message || String(e));
+          console.error('[auto-preview] failed:', (e as Error)?.message || String(e));
+          if (previewExit) {
+            try { app.exit(1); } catch { /* ignore */ }
+          }
+        });
     }
   } catch (e) {
     const err = e as Error;
