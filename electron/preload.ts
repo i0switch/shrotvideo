@@ -10,7 +10,9 @@ const electronAPI = {
   stopMonitoring: () => ipcRenderer.invoke('stop-monitoring'),
   getStatus: () => ipcRenderer.invoke('get-status'),
   onLogMessage: (callback: (message: string) => void) => {
-    const handler = (event: any, message: any) => callback(message);
+    const handler = (_event: Electron.IpcRendererEvent, message: unknown) => {
+      callback(String(message));
+    };
     ipcRenderer.on('log-message', handler);
     // Return a cleanup function
     return () => {
@@ -22,6 +24,41 @@ const electronAPI = {
   getCredential: (service: string, account: string) => ipcRenderer.invoke('get-credential', service, account),
   deleteCredential: (service: string, account: string) => ipcRenderer.invoke('delete-credential', service, account),
   checkAndInstallDependencies: (dependency: string) => ipcRenderer.invoke('check-and-install-dependencies', dependency),
+  // Render test generate
+  testGenerate: (filePath: string) => ipcRenderer.invoke('render.testGenerate', filePath) as Promise<string>,
+  previewGenerate: (filePath: string) => ipcRenderer.invoke('render.previewGenerate', filePath) as Promise<string>,
+};
+
+// auth API (X のみ対応)
+const authAPI = {
+  login: (platform: 'x') => ipcRenderer.invoke('auth.login', platform),
+  status: (platform: 'x') => ipcRenderer.invoke('auth.status', platform) as Promise<boolean>,
+  clear: (platform: 'x') => ipcRenderer.invoke('auth.clear', platform) as Promise<boolean>,
+};
+
+// files API
+const filesAPI = {
+  pickFolder: (key: string) => ipcRenderer.invoke('files.pickFolder', key),
+  pickFile: (key: string, filters?: Electron.FileFilter[]) => ipcRenderer.invoke('files.pickFile', key, filters),
+};
+
+// logs API
+const logsAPI = {
+  file: () => ipcRenderer.invoke('logs.file') as Promise<string>,
+  read: (maxBytes?: number) => ipcRenderer.invoke('logs.read', maxBytes) as Promise<string>,
+  jsonlFile: () => ipcRenderer.invoke('logs.jsonlFile') as Promise<string>,
+  readJsonl: (maxBytes?: number) => ipcRenderer.invoke('logs.readJsonl', maxBytes) as Promise<string>,
 };
 
 contextBridge.exposeInMainWorld('electronAPI', electronAPI);
+contextBridge.exposeInMainWorld('auth', authAPI);
+contextBridge.exposeInMainWorld('files', filesAPI);
+contextBridge.exposeInMainWorld('logs', logsAPI);
+// Forward renderer console errors to main log via IPC (best-effort)
+window.addEventListener('error', (ev) => {
+  try { ipcRenderer.send('log-message', `[renderer:error] ${ev.message}`); } catch { /* swallow */ }
+});
+window.addEventListener('unhandledrejection', (ev: PromiseRejectionEvent) => {
+  try { ipcRenderer.send('log-message', `[renderer:unhandledrejection] ${String(ev.reason)}`); } catch { /* swallow */ }
+});
+console.info('[preload] APIs exposed: electronAPI, auth, files, logs');

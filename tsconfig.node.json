@@ -17,6 +17,12 @@
     "core/**/*.ts",
     "ingest/**/*.ts",
     "app/**/*.ts",
-    "render/**/*.ts"
+  "render/**/*.ts",
+  "src/core/settings.ts"
+  ],
+  "exclude": [
+    "electron/tests/**",
+    "src/tests/**",
+    "tests/**"
   ]
 }

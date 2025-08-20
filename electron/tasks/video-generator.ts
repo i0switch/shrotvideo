@@ -3,6 +3,7 @@ import { app } from 'electron';
 import path from 'path';
 import log from 'electron-log';
 import type { AppSettings } from '../../src/core/settings.js';
+import fs from 'node:fs';
 
 // Utility to normalize path separators for cross-platform compatibility
 function normalizePath(p: string): string {
@@ -12,15 +13,80 @@ function normalizePath(p: string): string {
 // Function to safely escape text for ffmpeg drawtext filter
 function escapeFFmpegText(text: string): string {
   if (typeof text !== 'string') return '';
+  // 1) 改行は drawtext では \n で表現する必要がある
+  // 2) 区切り文字や特殊文字はバックスラッシュでエスケープ
+  const value = text.replace(/\r?\n/g, '\\n');
   let escaped = '';
-  for (const char of text) {
-    if (char === '%' || char === '\\' || char === ':' || char === "'") { // Added space for clarity
+  for (const char of value) {
+    if (char === '%' || char === '\\' || char === ':' || char === "'") {
       escaped += '\\' + char;
     } else {
       escaped += char;
     }
   }
   return escaped;
+}
+
+// 数値の安全評価・フォールバック
+function toNumberOr<T extends number>(v: unknown, fallback: T): T {
+  const n = Number(v);
+  return Number.isFinite(n) ? (n as T) : fallback;
+}
+
+function clamp(n: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, n));
+}
+
+// フィルタ引数内のパス用エスケープ（drawtext の fontfile 等）
+function escapeFilterPath(p: string): string {
+  const n = normalizePath(p);
+  // ':' と 単一引用符をエスケープ
+  return n.replace(/:/g, '\\:').replace(/'/g, "\\'");
+}
+
+function getDefaultFontPath(): string | null {
+  try {
+    if (process.platform === 'win32') {
+      const candidates = [
+  'C:/Windows/Fonts/arial.ttf',
+  'C:/Windows/Fonts/ARIAL.TTF',
+  'C:/Windows/Fonts/meiryo.ttc',
+  'C:/Windows/Fonts/meiryob.ttc',
+  'C:/Windows/Fonts/msgothic.ttc',
+  'C:/Windows/Fonts/MSGOTHIC.TTC',
+  'C:/Windows/Fonts/YuGothR.ttc',
+  'C:/Windows/Fonts/YuGothM.ttc',
+  'C:/Windows/Fonts/seguiemj.ttf',
+  'C:/Windows/Fonts/segoeui.ttf',
+      ];
+      for (const c of candidates) if (fs.existsSync(c)) return c;
+    } else if (process.platform === 'darwin') {
+      const candidates = [
+        '/Library/Fonts/Arial.ttf',
+        '/System/Library/Fonts/Supplemental/Arial.ttf',
+        '/Library/Fonts/ヒラギノ角ゴシック W3.ttc',
+      ];
+      for (const c of candidates) if (fs.existsSync(c)) return c;
+    } else {
+      const candidates = [
+        '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+        '/usr/share/fonts/truetype/freefont/FreeSans.ttf',
+      ];
+      for (const c of candidates) if (fs.existsSync(c)) return c;
+    }
+  } catch { /* ignore */ }
+  return null;
+}
+
+// Convert CSS hex (#RRGGBB) or known names to ffmpeg color (0xRRGGBB or name)
+function toFfmpegColor(input: string | undefined, fallback: string): string {
+  if (!input) return fallback;
+  const t = input.trim();
+  const m = /^#?([0-9a-fA-F]{6})$/.exec(t);
+  if (m) return `0x${m[1]}`;
+  const known = ['white','black','red','green','blue','yellow','cyan','magenta','gray','grey','orange','purple'];
+  if (known.includes(t.toLowerCase())) return t.toLowerCase();
+  return fallback;
 }
 
 function getOverlayPosition(position: 'center' | 'top-center' | 'bottom-center' | 'custom', videoWidth: number, videoHeight: number, scale: number): string {
@@ -71,93 +137,113 @@ function getFFmpegPreset(quality: 'fast' | 'standard' | 'high' | string): string
 export function generateVideo(
   screenshotPath: string,
   settings: AppSettings,
-  sourceVideoUrl?: string // Optional source video URL for Function B
+  sourceVideoUrl?: string
 ): Promise<string> {
   return new Promise((resolve, reject) => {
-    const { render, general } = settings;
+    const { render: rawRender, general } = settings;
+    const videoWidth = toNumberOr(rawRender?.resolution?.width, 1080);
+    const videoHeight = toNumberOr(rawRender?.resolution?.height, 1920);
+    const scale = clamp(toNumberOr(rawRender?.scale, 0.8), 0.05, 5);
+    const teleTextBg = rawRender?.teleTextBg || '#000000';
+    const captionTextColor = rawRender?.captionTextColor || '#ffffff';
+    const captionBgOpacity = clamp(toNumberOr(rawRender?.captionBgOpacity, 1.0), 0, 1);
+    const captionPadding = Math.max(8, Math.round(videoHeight * (16 / 1920)));
+    const durationSec = Math.max(1, toNumberOr(rawRender?.durationSec, 15));
+    const overlayPosition = (rawRender?.overlayPosition as 'center' | 'top-center' | 'bottom-center' | 'custom') || 'center';
+    const fontFileFromSettings = rawRender?.fontFilePath && rawRender.fontFilePath.trim() ? rawRender.fontFilePath.trim() : '';
+    const qualityPreset = (rawRender?.qualityPreset as 'low' | 'standard' | 'high' | string) || 'standard';
+    const captionsTop = escapeFFmpegText(rawRender?.captions?.top ?? '');
+    const captionsBottom = escapeFFmpegText(rawRender?.captions?.bottom ?? '');
+
     const outputFileName = `video-${Date.now()}.mp4`;
-    // Note: outputPath is created with path.join, which is OS-specific. We normalize it for ffmpeg.
     const outputPath = normalizePath(path.join(general.outputPath, outputFileName));
 
     log.info(`Starting video generation. Output: ${outputPath}`);
 
-    const topText = escapeFFmpegText(render.captions.top);
-    const bottomText = escapeFFmpegText(render.captions.bottom);
-
-    const videoHeight = render.resolution.height;
-    const topCaptionHeight = render.topCaptionHeight;
-    const bottomCaptionHeight = render.bottomCaptionHeight;
+    const topText = captionsTop;
+    const bottomText = captionsBottom;
     const topFontSize = getFontSize(videoHeight, 'top');
     const bottomFontSize = getFontSize(videoHeight, 'bottom');
-    const topTextY = Math.round((topCaptionHeight - topFontSize) / 2); // Vertically center text in the box
-    const bottomTextY = videoHeight - bottomCaptionHeight + Math.round((bottomCaptionHeight - bottomFontSize) / 2);
+    const topOffset = toNumberOr(rawRender?.topCaptionOffset, 0);
+    const bottomOffset = toNumberOr(rawRender?.bottomCaptionOffset, 0);
+    const yTopExpr = `${captionPadding}+${topOffset}`;
+    const yBottomExpr = `h-text_h-${captionPadding}+${bottomOffset}`;
 
     const ffmpegCommand = ffmpeg();
-    let complexFilter: string[] = [];
-    let audioMapIndex = 1; // Start with 1, assuming background video audio is 0
+    const complexFilter: string[] = [];
 
-    // Base video input (background or source video)
-    let inputVideoPath = sourceVideoUrl || render.backgroundVideoPath;
-    if (!inputVideoPath) {
-        return reject(new Error('A background or source video must be provided.'));
-    }
-    // Normalize path if it's not a URL
+    // Base input
+    const inputVideoPath = sourceVideoUrl || rawRender?.backgroundVideoPath;
+    if (!inputVideoPath) return reject(new Error('A background or source video must be provided.'));
     ffmpegCommand.input(inputVideoPath.startsWith('http') ? inputVideoPath : normalizePath(inputVideoPath));
 
-    // Screenshot input (only for Function A)
+    // Optional screenshot overlay
+    let nextInputIndex = 1; // base video is 0
     if (!sourceVideoUrl && screenshotPath) {
-        ffmpegCommand.input(normalizePath(screenshotPath));
-        const screenshotIndex = 1; // screenshot is the second input
-        complexFilter.push(
-            `[${screenshotIndex}:v]scale=iw*${render.scale}:-1[fg]`,
-            `[0:v]scale=${render.resolution.width}:${render.resolution.height},format=yuv420p[bg]`,
-            `[bg][fg]overlay=${getOverlayPosition(render.overlayPosition, render.resolution.width, render.resolution.height, render.scale)}[base_with_overlay]`
-        );
+      ffmpegCommand.input(normalizePath(screenshotPath));
+      const screenshotIndex = 1;
+      const overlayYExpr = overlayPosition === 'top-center' ? `0` : overlayPosition === 'bottom-center' ? `H-h` : `(H-h)/2`;
+      complexFilter.push(
+        `[${screenshotIndex}:v]scale=w='min(iw*${scale},${videoWidth})':h='min(ih*${scale},${videoHeight})':force_original_aspect_ratio=decrease[fg]`,
+        `[0:v]scale=${videoWidth}:${videoHeight},format=yuv420p[bg]`,
+        `[bg][fg]overlay=(W-w)/2:${overlayYExpr}[base_with_overlay]`
+      );
+      nextInputIndex = 2;
     } else {
-        // For Function B, just scale the source video
-        complexFilter.push(`[0:v]scale=${render.resolution.width}:${render.resolution.height},format=yuv420p[base_with_overlay]`);
+      complexFilter.push(`[0:v]scale=${videoWidth}:${videoHeight},format=yuv420p[base_with_overlay]`);
     }
 
     const currentVideo = complexFilter.length > 0 ? '[base_with_overlay]' : '[0:v]';
 
-    // Add caption boxes and text
-    complexFilter.push(
-        `${currentVideo}drawbox=x=0:y=0:w=iw:h=${topCaptionHeight}:color=${render.teleTextBg}@${render.captionBgOpacity}:t=fill[v_with_top_box]`,
-        `[v_with_top_box]drawtext=text='${topText}':x=(w-text_w)/2:y=${topTextY}:fontcolor=white:fontsize=${topFontSize}[v_with_top_text]`,
-        `[v_with_top_text]drawbox=x=0:y=h-${bottomCaptionHeight}:w=iw:h=${bottomCaptionHeight}:color=${render.teleTextBg}@${render.captionBgOpacity}:t=fill[v_with_bottom_box]`,
-        `[v_with_bottom_box]drawtext=text='${bottomText}':x=(w-text_w)/2:y=${bottomTextY}:fontcolor=white:fontsize=${bottomFontSize}`
-    );
-
-    ffmpegCommand.complexFilter(complexFilter.join(', '));
-
-    // Add BGM if specified
-    if (render.bgmPath) {
-        ffmpegCommand.input(normalizePath(render.bgmPath));
-        audioMapIndex++; // BGM is now the next audio stream
+    // Text with box around text only
+    const fontPath = fontFileFromSettings || getDefaultFontPath();
+    if (fontPath) {
+      log.info('[video-generator] using fontfile:', fontPath);
+      const fontOpt = `:fontfile='${escapeFilterPath(fontPath)}'${/\.ttc$/i.test(fontPath) ? ':fontindex=0' : ''}`;
+      const boxColor = `${toFfmpegColor(teleTextBg, 'black')}@${captionBgOpacity}`;
+      const textColor = toFfmpegColor(captionTextColor, 'white');
+      let curr = currentVideo;
+      if (topText && topText.trim().length > 0) {
+        complexFilter.push(`${curr}drawtext=text='${topText}':x=(w-text_w)/2:y=${yTopExpr}:fontcolor=${textColor}:fontsize=${topFontSize}:box=1:boxcolor=${boxColor}:boxborderw=${captionPadding}${fontOpt}[v_t1]`);
+        curr = '[v_t1]';
+      }
+      if (bottomText && bottomText.trim().length > 0) {
+        complexFilter.push(`${curr}drawtext=text='${bottomText}':x=(w-text_w)/2:y=${yBottomExpr}:fontcolor=${textColor}:fontsize=${bottomFontSize}:box=1:boxcolor=${boxColor}:boxborderw=${captionPadding}${fontOpt}`);
+      }
+    } else {
+      log.warn('[video-generator] no fontfile found. Skipping drawtext to avoid fontconfig crash.');
     }
 
-    ffmpegCommand.outputOptions([
-        `-t ${render.durationSec}`,
-        '-c:v libx264',
-        `-preset ${getFFmpegPreset(render.qualityPreset)}`,
-        '-pix_fmt yuv420p',
-        '-c:a aac',
-        '-shortest' // Ensure output duration doesn't exceed the shortest input (e.g., short BGM)
-    ]);
+    const filterGraph = complexFilter.join(', ');
+    log.info('[video-generator] filterGraph:', filterGraph);
+    ffmpegCommand.complexFilter(filterGraph);
 
-    // Map audio streams
-    // Map 0:a? -> background/source video's audio (if it exists)
-    // Map 1:a? -> BGM's audio (if it exists)
+    // Optional BGM input and audio mapping
+    let bgmInputIndex: number | undefined;
+    if (rawRender?.bgmPath) {
+      ffmpegCommand.input(normalizePath(rawRender.bgmPath));
+      bgmInputIndex = nextInputIndex; // after base and optional screenshot
+      nextInputIndex += 1;
+    }
+
+    ffmpegCommand.outputOptions(
+      `-t ${durationSec}`,
+      '-c:v libx264',
+      `-preset ${getFFmpegPreset(qualityPreset)}`,
+      '-pix_fmt yuv420p',
+      '-c:a aac',
+      '-shortest'
+    );
+
+    // Map audio: background/source video and optional BGM
     ffmpegCommand.outputOptions('-map 0:a?');
-    if (render.bgmPath) {
-        ffmpegCommand.outputOptions(`-map ${audioMapIndex - 1}:a?`);
-        // You might want to control volume, e.g., lower BGM volume
-        // This is more complex with multiple streams, so keeping it simple for now.
+    if (bgmInputIndex !== undefined) {
+      ffmpegCommand.outputOptions(`-map ${bgmInputIndex}:a?`);
     }
 
     ffmpegCommand
       .on('start', (commandLine) => {
-          log.info('Spawned Ffmpeg with command: ' + commandLine);
+        log.info('Spawned Ffmpeg with command: ' + commandLine);
       })
       .on('end', () => {
         log.info(`Video generation finished successfully: ${outputPath}`);

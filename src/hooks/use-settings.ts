@@ -9,9 +9,9 @@ const SETTINGS_QUERY_KEY = ['settings'];
  * If the source value is an array, it replaces the destination value.
  * Otherwise, it returns undefined to let mergeWith handle it.
  */
-function arrayReplacementCustomizer(objValue: any, srcValue: any) {
+function arrayReplacementCustomizer<T>(objValue: unknown, srcValue: unknown): T | undefined {
   if (Array.isArray(srcValue)) {
-    return srcValue;
+  return srcValue as T;
   }
   // Return undefined to fallback to default merge behavior
   return undefined;
@@ -68,6 +68,16 @@ export function useSettings() {
   });
 
   const { mutate: updateSettings, isPending: isUpdating } = useMutation<void, Error, Partial<AppSettings>>({
+    // 楽観的更新: 先にキャッシュを更新してUIを即時反映
+    onMutate: async (newSettingsPatch: Partial<AppSettings>) => {
+      await queryClient.cancelQueries({ queryKey: SETTINGS_QUERY_KEY });
+      const previous = queryClient.getQueryData<AppSettings>(SETTINGS_QUERY_KEY);
+      if (previous) {
+        const optimistic = mergeWith({}, previous, newSettingsPatch, arrayReplacementCustomizer);
+        queryClient.setQueryData<AppSettings>(SETTINGS_QUERY_KEY, optimistic);
+      }
+      return { previous } as { previous?: AppSettings };
+    },
     mutationFn: async (newSettingsPatch: Partial<AppSettings>) => {
       if (!isElectron) {
         // In a non-electron environment, we can simulate the update for optimistic UI
@@ -86,7 +96,11 @@ export function useSettings() {
         queryClient.invalidateQueries({ queryKey: SETTINGS_QUERY_KEY });
       }
     },
-    onError: (error) => {
+  onError: (error, _vars, context: { previous?: AppSettings } | undefined) => {
+      // 失敗時は前の設定にロールバック
+      if (context?.previous) {
+        queryClient.setQueryData<AppSettings>(SETTINGS_QUERY_KEY, context.previous);
+      }
       console.error("Failed to update settings:", error);
     },
   });

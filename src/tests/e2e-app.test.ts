@@ -50,10 +50,11 @@ test.describe('Application Page Rendering', () => {
   });
 
   test('should navigate to and display the Setup page on manual navigation', async ({ page }) => {
-    await page.goto('/setup');
+    // HashRouter を使用しているため、直接の手動ナビゲーションはハッシュ付きURLに遷移
+    await page.goto('/#/setup');
 
     await expect(page).toHaveURL(/.*setup/);
-    await expect(page.getByRole('heading', { name: '初期セットアップ' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '初期セットアップ' })).toBeVisible();
     // Check that the "Go to Dashboard" button appears after checks complete.
     await expect(page.getByRole('button', { name: 'ダッシュボードへ' })).toBeVisible({ timeout: 30000 });
   });

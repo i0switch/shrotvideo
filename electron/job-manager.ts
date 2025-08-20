@@ -3,7 +3,7 @@ import pRetry from 'p-retry';
 import Store from 'electron-store';
 import log from 'electron-log';
 import type { AppSettings, Platform, Account } from '../src/core/settings.js';
-import { scrapeAccount, ScrapeResult } from './tasks/scraper.js';
+import { scrapeAccount, ScrapeResult, listRecentItems } from './tasks/scraper.js';
 import { generateVideo } from './tasks/video-generator.js';
 
 type JobStatus = 'idle' | 'running' | 'stopped';
@@ -40,7 +40,7 @@ export class JobManager {
     this.globalQueue = new PQueue({ concurrency: 5 });
 
     // Load previous job state
-    const savedJobState = (this.store as any).get('jobState', {}) as JobState;
+  const savedJobState = (this.store as unknown as { get: (k: string, d: JobState) => JobState }).get('jobState', { isRunning: false, platforms: {} as Record<Platform, PlatformJobManagerState> });
     this.isRunning = savedJobState.isRunning || false;
 
     if (savedJobState.platforms) {
@@ -81,7 +81,7 @@ export class JobManager {
   }
 
   private saveJobState() {
-    (this.store as any).set('jobState', this.getJobStateForPersistence());
+    (this.store as unknown as { set: (k: string, v: unknown) => void }).set('jobState', this.getJobStateForPersistence());
   }
 
   public start() {
@@ -93,7 +93,7 @@ export class JobManager {
     this.saveJobState(); // Save state on start
     log.info('JobManager started.');
 
-    const settings = (this.store as any).store;
+  const settings = (this.store as unknown as { store: AppSettings }).store;
     for (const key in settings.platforms) {
       const platform = key as Platform;
       const platformSettings = settings.platforms[platform];
@@ -117,7 +117,7 @@ export class JobManager {
   }
 
   private startPlatformJob(platform: Platform) {
-    const platformSettings = (this.store as any).store.platforms[platform];
+  const platformSettings = (this.store as unknown as { store: AppSettings }).store.platforms[platform];
     if (!platformSettings || !platformSettings.enabled) {
       return;
     }
@@ -166,7 +166,7 @@ export class JobManager {
   }
 
   public getStatus() {
-    const status: Record<string, any> = {
+    const status: { isRunning: boolean; globalQueueSize: number; globalPendingTasks: number; platforms: Record<string, { status: JobStatus; consecutiveFails: number; processedCount: number; elapsedTime: number }> } = {
       isRunning: this.isRunning,
       globalQueueSize: this.globalQueue.size, // New: Global queue size
       globalPendingTasks: this.globalQueue.pending, // New: Global pending tasks
@@ -187,27 +187,38 @@ export class JobManager {
     const job = this.jobs.get(platform);
     if (!job || job.status !== 'running') return; // Ensure job is still running
 
-    const task = async () => {
+  const task = async () => {
       log.info(`Running task for ${platform}: ${accountId}`);
-      // 1. Scrape
-      const scrapeResult = await scrapeAccount(platform, accountId, (this.store as any).store);
-      if (!scrapeResult) {
-        throw new Error('Scraping did not return a result.');
-      }
-      log.info(`[${platform}:${accountId}] Scraping successful:`, scrapeResult);
 
-      // 2. Generate Video
-      let videoPath: string;
-      if (scrapeResult.type === 'screenshot') {
-        videoPath = await generateVideo(scrapeResult.path, (this.store as any).store);
-      } else if (scrapeResult.type === 'video_url') {
-        // Pass empty string for screenshot path, and the url as the third argument
-        videoPath = await generateVideo('', (this.store as any).store, scrapeResult.url);
+      // 設定から対象アカウントの状態を参照
+  const settings: AppSettings = (this.store as unknown as { store: AppSettings }).store;
+      const acct = settings.platforms[platform].accounts.find(a => a.id === accountId);
+      const backfillCount = Math.max(0, acct?.backfillRemaining ?? 0);
+
+      if (backfillCount > 0) {
+        // 初回バックフィル：過去N件のアイテム一覧を取得して順次処理
+        // listRecentItems は { id, type, url?, screenshotSelector? }[] を返す想定
+        const items = await listRecentItems(platform, accountId, backfillCount, acct?.lastCursor);
+        log.info(`[${platform}:${accountId}] Backfill ${items.length} item(s).`);
+        for (const item of items) {
+          await this.processItem(platform, accountId, item);
+          // カーソル更新（最後に処理したID）
+          (this.store as unknown as { set: (k: string, v: unknown) => void }).set(`platforms.${platform}.accounts`, settings.platforms[platform].accounts.map(a => a.id === accountId ? { ...a, lastCursor: item.id } : a));
+        }
+        // 残数を0に
+  (this.store as unknown as { set: (k: string, v: unknown) => void }).set(`platforms.${platform}.accounts`, settings.platforms[platform].accounts.map(a => a.id === accountId ? { ...a, backfillRemaining: 0 } : a));
+        log.info(`[${platform}:${accountId}] Backfill completed.`);
       } else {
-        throw new Error(`Unknown scrape result type: ${(scrapeResult as any).type}`);
+        // 通常運用：新規のみ（lastCursor より新しい最新1件を対象）
+        const items = await listRecentItems(platform, accountId, 1, acct?.lastCursor);
+        if (items.length > 0) {
+          const item = items[0];
+          await this.processItem(platform, accountId, item);
+          (this.store as unknown as { set: (k: string, v: unknown) => void }).set(`platforms.${platform}.accounts`, settings.platforms[platform].accounts.map(a => a.id === accountId ? { ...a, lastCursor: item.id } : a));
+        } else {
+          log.info(`[${platform}:${accountId}] No new items to process.`);
+        }
       }
-
-      log.info(`[${platform}:${accountId}] Video generation successful: ${videoPath}`);
     };
 
     try {
@@ -216,7 +227,7 @@ export class JobManager {
         pRetry(task, {
           retries: 3,
           minTimeout: 5000, // 5 seconds
-          onFailedAttempt: (error: any) => {
+          onFailedAttempt: (error: { attemptNumber: number; retriesLeft: number; message?: string }) => {
             log.warn(`[${platform}:${accountId}] Attempt ${error.attemptNumber} failed. There are ${error.retriesLeft} retries left. Reason: ${error.message}`);
           },
         }),
@@ -233,8 +244,9 @@ export class JobManager {
         this.stopPlatformJob(platform);
       }
 
-    } catch (error: any) {
-      log.error(`[${platform}:${accountId}] Task failed after all retries or timed out:`, error);
+    } catch (error) {
+      const e = error as Error;
+      log.error(`[${platform}:${accountId}] Task failed after all retries or timed out:`, e.message || String(error));
       job.consecutiveFails++;
       this.saveJobState(); // Save state on task failure
       if (job.consecutiveFails >= 10) {
@@ -242,5 +254,27 @@ export class JobManager {
         this.stopPlatformJob(platform);
       }
     }
+  }
+
+  private async processItem(platform: Platform, accountId: string, item: { id: string; type: 'screenshot'|'video_url'; url?: string; path?: string }) {
+    // スクレイピング済みアイテムから動画生成実行
+    let videoPath = '';
+    if (item.type === 'screenshot') {
+      if (!item.path) {
+        // 互換: 以前の1件スクレイプフローにフォールバック
+        const scrapeResult = await scrapeAccount(platform, accountId, (this.store as unknown as { store: AppSettings }).store);
+        if (!scrapeResult) throw new Error('Scraping did not return a result.');
+        if (scrapeResult.type !== 'screenshot') throw new Error('Expected screenshot item.');
+        videoPath = await generateVideo(scrapeResult.path, (this.store as unknown as { store: AppSettings }).store);
+      } else {
+        videoPath = await generateVideo(item.path, (this.store as unknown as { store: AppSettings }).store);
+      }
+    } else if (item.type === 'video_url') {
+      const url = item.url || '';
+      videoPath = await generateVideo('', (this.store as unknown as { store: AppSettings }).store, url);
+    } else {
+      throw new Error(`Unknown item type: ${item.type}`);
+    }
+    log.info(`[${platform}:${accountId}] Video generation successful: ${videoPath}`);
   }
 }

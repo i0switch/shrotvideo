@@ -1,0 +1,13 @@
+{
+  "name": "electron-telop-minimal",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "main.js",
+  "scripts": {
+    "dev": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^37.3.0"
+  }
+}

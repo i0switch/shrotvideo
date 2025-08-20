@@ -10,7 +10,7 @@ export default defineConfig({
 
   webServer: {
     command: 'npm run dev',
-    url: 'http://localhost:8080',
+  url: 'http://127.0.0.1:5173',
     reuseExistingServer: !process.env.CI,
     timeout: 120 * 1000, // 2 minutes to start
     stdout: 'pipe',
@@ -22,7 +22,7 @@ export default defineConfig({
     viewport: { width: 1280, height: 800 },
     ignoreHTTPSErrors: true,
     video: 'on-first-retry', // Changed to reduce noise, only record video on retry
-    baseURL: 'http://localhost:8080', // Set base URL
+  baseURL: 'http://127.0.0.1:5173', // Set base URL to Vite dev server
   },
 
   projects: [

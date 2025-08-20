@@ -25,7 +25,7 @@ const Setup = () => {
 
   const runSetup = async () => {
     // If not in an Electron environment, skip the checks and go straight to completed.
-    if (!window.electronAPI) {
+  if (!window.electronAPI) {
       addMessage("非Electron環境で実行中。依存関係チェックをスキップします。");
       setSetupStatus("completed");
       setProgress(100);
@@ -50,7 +50,12 @@ const Setup = () => {
       setChecks((prev) => ({ ...prev, [dep]: { ...prev[dep], status: "checking" } }));
       addMessage(`${dep} のバージョンを確認中...`);
       try {
-        const result = await window.electronAPI.checkAndInstallDependencies(dep);
+        // 型未定義のため安全なアクセスで呼び出す
+        const fn = (window.electronAPI as unknown as { checkAndInstallDependencies?: (d: string) => Promise<{ success: boolean; message: string }> }).checkAndInstallDependencies;
+        if (!fn) {
+          throw new Error('checkAndInstallDependencies API is not available');
+        }
+        const result = await fn(dep);
         if (result.success) {
           setChecks((prev) => ({ ...prev, [dep]: { status: "success", message: `${dep} が見つかりました。${result.message}` } }));
           addMessage(`${dep} のバージョン確認: 成功 - ${result.message}`);
@@ -60,9 +65,10 @@ const Setup = () => {
           allSuccess = false;
           break; // Stop on first failure
         }
-      } catch (error: any) {
-        setChecks((prev) => ({ ...prev, [dep]: { status: "failed", message: `${dep} の確認中にエラーが発生しました。${error.message}` } }));
-        addMessage(`${dep} の確認中にエラーが発生しました: ${error.message}`);
+      } catch (error) {
+        const e = error as Error & { message?: string };
+        setChecks((prev) => ({ ...prev, [dep]: { status: "failed", message: `${dep} の確認中にエラーが発生しました。${e?.message || String(error)}` } }));
+        addMessage(`${dep} の確認中にエラーが発生しました: ${e?.message || String(error)}`);
         allSuccess = false;
         break; // Stop on first failure
       }
@@ -81,6 +87,7 @@ const Setup = () => {
   useEffect(() => {
     // The runSetup is now called inside this useEffect hook
     runSetup();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const getStatusIcon = (status: string) => {

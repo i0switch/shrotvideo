@@ -49,7 +49,7 @@ describe('generateVideo', () => {
     general: {
       outputPath: '/tmp/videos',
     },
-    platforms: { /* ... not needed for this test ... */ } as any,
+  platforms: { x: { enabled: false, accounts: [], intervalMinutes: 15, scrapeDelayMs: 0 }, tiktok: { enabled: false, accounts: [], intervalMinutes: 15, scrapeDelayMs: 0 }, instagram: { enabled: false, accounts: [], intervalMinutes: 15, scrapeDelayMs: 0 }, youtube: { enabled: false, accounts: [], intervalMinutes: 15, scrapeDelayMs: 0 } },
     render: {
       resolution: { width: 1080, height: 1920 },
       durationSec: 10,

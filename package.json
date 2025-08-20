@@ -6,12 +6,12 @@
   "description": "アダアフィ用ショート動画支援アプリ（仮）",
   "author": "Your Name <your.email@example.com>",
   "homepage": "./",
-  "main": "dist/electron/main.js",
+  "main": "electron-entry.cjs",
   "scripts": {
-    "dev": "vite",
-    "start": "npm run build:electron && cross-env NODE_ENV=development concurrently \"npm:dev\" \"wait-on http://localhost:8080 && electron .\"",
-    "build": "npm run clean && npm run build:electron && tsc && vite build",
-    "build:electron": "tsc -p tsconfig.electron.json",
+    "dev": "vite --strictPort",
+  "start": "npm run build:electron && cross-env NODE_ENV=development concurrently \"npm:dev\" \"wait-on http://127.0.0.1:5173 && electron .\"",
+  "build": "npm run clean && npm run build:electron && tsc && vite build",
+  "build:electron": "tsc -p tsconfig.electron.json && node scripts/postbuild-electron.cjs",
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest",
@@ -19,7 +19,8 @@
     "test:e2e": "playwright test",
     "dist": "electron-builder",
     "package": "npm run build && npm run dist",
-    "clean": "rimraf dist release"
+  "clean": "rimraf dist release",
+  "run:urls": "node ./dist/electron/electron/tools/generate-from-urls.js"
   },
   "build": {
     "appId": "com.gemini.shortvideotool",
@@ -29,7 +30,8 @@
     },
     "files": [
       "dist/",
-      "package.json"
+      "package.json",
+      "electron-entry.cjs"
     ],
     "mac": {
       "target": [

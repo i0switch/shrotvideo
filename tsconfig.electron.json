@@ -23,6 +23,7 @@
     "electron/tasks/scraper.ts",
     "electron/tasks/video-generator.ts",
     "electron/preload.ts",
-    "electron/tests/**/*.ts"
+  "electron/tools/**/*.ts",
+  "src/core/settings.ts"
   ]
 }

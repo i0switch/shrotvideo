@@ -9,12 +9,12 @@
     "paths": {
       "@/*": ["./src/*"]
     },
-    "noImplicitAny": false,
-    "noUnusedParameters": false,
+  "noImplicitAny": false,
+  "noUnusedParameters": true,
     "skipLibCheck": true,
     "esModuleInterop": true,
     "allowJs": true,
-    "noUnusedLocals": false,
-    "strictNullChecks": false
+  "noUnusedLocals": true,
+  "strictNullChecks": true
   }
 }
