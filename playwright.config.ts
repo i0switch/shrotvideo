@@ -8,6 +8,7 @@ export default defineConfig({
   // Opt out of parallel tests because they conflict with a single server instance.
   workers: 1,
 
+  /*
   webServer: {
     command: 'npm run dev',
   url: 'http://127.0.0.1:5173',
@@ -16,6 +17,7 @@ export default defineConfig({
     stdout: 'pipe',
     stderr: 'pipe',
   },
+  */
 
   use: {
     headless: true,
@@ -32,9 +34,9 @@ export default defineConfig({
     },
     // Electron project is disabled for now as it requires more complex setup
     // to launch the electron app directly. Testing against chromium is sufficient.
-    // {
-    //   name: 'Electron',
-    //   use: { ...devices['Desktop Chrome'] },
-    // },
+    {
+      name: 'Electron',
+      use: { ...devices['Desktop Chrome'] },
+    },
   ],
 });

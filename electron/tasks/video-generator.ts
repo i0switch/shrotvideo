@@ -166,6 +166,18 @@ export function generateVideo(
     const outputFileName = `video-${Date.now()}.mp4`;
     const outputPath = normalizePath(path.join(general.outputPath, outputFileName));
 
+    // Ensure the output directory exists before trying to write the file
+    try {
+      const outputDir = path.dirname(outputPath);
+      if (!fs.existsSync(outputDir)) {
+        fs.mkdirSync(outputDir, { recursive: true });
+        log.info(`Created output directory: ${outputDir}`);
+      }
+    } catch (e) {
+      log.error(`Failed to create output directory for ${outputPath}:`, (e as Error).message);
+      // We can still let ffmpeg try, it might have permissions where we don't.
+    }
+
     log.info(`Starting video generation. Output: ${outputPath}`);
 
     const topText = captionsTop;
@@ -232,6 +244,14 @@ export function generateVideo(
   const filterGraph = complexFilter.join('; ');
     log.info('[video-generator] filterGraph:', filterGraph);
     ffmpegCommand.complexFilter(filterGraph);
+
+    // Explicitly map the final video stream from the complex filter
+    const lastFilterOutput = complexFilter.length > 0 ? (complexFilter[complexFilter.length - 1].match(/\[([^\]]+)\]$/) || [])[1] : '0:v';
+    if (lastFilterOutput) {
+      ffmpegCommand.outputOptions('-map', `[${lastFilterOutput}]`);
+    } else {
+      ffmpegCommand.outputOptions('-map', '0:v'); // Fallback
+    }
 
     // Optional BGM input and audio mapping
     let bgmInputIndex: number | undefined;
