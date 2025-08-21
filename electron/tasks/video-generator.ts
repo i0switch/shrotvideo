@@ -185,7 +185,7 @@ export function generateVideo(
     if (!inputVideoPath) return reject(new Error('A background or source video must be provided.'));
     ffmpegCommand.input(inputVideoPath.startsWith('http') ? inputVideoPath : normalizePath(inputVideoPath));
 
-    // Optional screenshot overlay
+    // Optional screenshot overlay; otherwise split base video to apply scale on FG (so scale affects inserted video)
     let nextInputIndex = 1; // base video is 0
     if (!sourceVideoUrl && screenshotPath) {
       ffmpegCommand.input(normalizePath(screenshotPath));
@@ -198,7 +198,13 @@ export function generateVideo(
       );
       nextInputIndex = 2;
     } else {
-      complexFilter.push(`[0:v]scale=${videoWidth}:${videoHeight},format=yuv420p[base_with_overlay]`);
+      const overlayYExpr = overlayPosition === 'top-center' ? `0` : overlayPosition === 'bottom-center' ? `H-h` : `(H-h)/2`;
+      complexFilter.push(
+        `[0:v]split[bgv][fgv]`,
+        `[bgv]scale=${videoWidth}:${videoHeight},format=yuv420p[bg]`,
+        `[fgv]scale=w='min(iw*${scale},${videoWidth})':h='min(ih*${scale},${videoHeight})':force_original_aspect_ratio=decrease[fg]`,
+        `[bg][fg]overlay=(W-w)/2:${overlayYExpr}[base_with_overlay]`
+      );
     }
 
     const currentVideo = complexFilter.length > 0 ? '[base_with_overlay]' : '[0:v]';
