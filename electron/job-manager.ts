@@ -5,6 +5,7 @@ import log from 'electron-log';
 import type { AppSettings, Platform, Account } from '../src/core/settings.js';
 import { scrapeAccount, ScrapeResult, listRecentItems } from './tasks/scraper.js';
 import { generateVideo } from './tasks/video-generator.js';
+import { downloadVideoToTemp } from './tasks/downloader.js';
 
 type JobStatus = 'idle' | 'running' | 'stopped';
 
@@ -206,23 +207,46 @@ export class JobManager {
       if (backfillCount > 0) {
         // 初回バックフィル：過去N件のアイテム一覧を取得して順次処理
         // listRecentItems は { id, type, url?, screenshotSelector? }[] を返す想定
-  const items = await listRecentItems(platform, accountId, backfillCount, acct?.lastCursor);
+  let items = await listRecentItems(platform, accountId, backfillCount, acct?.lastCursor);
+        // 既処理IDでフィルタ（重複ダウンロード/生成を避ける）
+        const processed = new Set(acct?.processedIds || []);
+        items = items.filter(i => !processed.has(i.id));
         log.info(`[${platform}:${accountId}] Backfill ${items.length} item(s).`);
         for (const item of items) {
           await this.processItem(platform, accountId, item);
           // カーソル更新（最後に処理したID）
           (this.store as unknown as { set: (k: string, v: unknown) => void }).set(`platforms.${platform}.accounts`, settings.platforms[platform].accounts.map(a => a.id === accountId ? { ...a, lastCursor: item.id } : a));
+          // processedIds へ追記（最大500件保持）
+          const newAccounts = settings.platforms[platform].accounts.map(a => {
+            if (a.id !== accountId) return a;
+            const arr = Array.isArray(a.processedIds) ? [...a.processedIds] : [];
+            arr.push(item.id);
+            const trimmed = arr.length > 500 ? arr.slice(arr.length - 500) : arr;
+            return { ...a, processedIds: trimmed };
+          });
+          (this.store as unknown as { set: (k: string, v: unknown) => void }).set(`platforms.${platform}.accounts`, newAccounts);
         }
         // 残数を0に
   (this.store as unknown as { set: (k: string, v: unknown) => void }).set(`platforms.${platform}.accounts`, settings.platforms[platform].accounts.map(a => a.id === accountId ? { ...a, backfillRemaining: 0 } : a));
         log.info(`[${platform}:${accountId}] Backfill completed.`);
       } else {
         // 通常運用：新規のみ（lastCursor より新しい最新1件を対象）
-        const items = await listRecentItems(platform, accountId, 1, acct?.lastCursor);
+        let items = await listRecentItems(platform, accountId, 1, acct?.lastCursor);
+        const processed = new Set(acct?.processedIds || []);
+        items = items.filter(i => !processed.has(i.id));
         if (items.length > 0) {
           const item = items[0];
           await this.processItem(platform, accountId, item);
           (this.store as unknown as { set: (k: string, v: unknown) => void }).set(`platforms.${platform}.accounts`, settings.platforms[platform].accounts.map(a => a.id === accountId ? { ...a, lastCursor: item.id } : a));
+          // processedIds 更新（最大500件）
+          const newAccounts = settings.platforms[platform].accounts.map(a => {
+            if (a.id !== accountId) return a;
+            const arr = Array.isArray(a.processedIds) ? [...a.processedIds] : [];
+            arr.push(item.id);
+            const trimmed = arr.length > 500 ? arr.slice(arr.length - 500) : arr;
+            return { ...a, processedIds: trimmed };
+          });
+          (this.store as unknown as { set: (k: string, v: unknown) => void }).set(`platforms.${platform}.accounts`, newAccounts);
         } else {
           log.info(`[${platform}:${accountId}] No new items to process.`);
         }
@@ -264,6 +288,114 @@ export class JobManager {
     }
   }
 
+  // 即時バックフィル実行（アカウント追加直後の「はい」から呼び出し）
+  public async enqueueImmediateBackfill(platform: Platform, accountId: string): Promise<void> {
+    const settings: AppSettings = (this.store as unknown as { store: AppSettings }).store;
+    const acct = settings.platforms[platform].accounts.find(a => a.id === accountId);
+    if (!acct) return;
+    const count = Math.max(0, Math.min(50, acct.backfillRemaining ?? settings.general.initialBackfillCount ?? 0));
+    if (count <= 0) return;
+    // ジョブ状態に依存しない即時実行（one-off）。グローバルキューで直列化。
+    await this.globalQueue.add(async () => this.runImmediateBackfill(platform, accountId));
+  }
+
+  // 内部: 即時バックフィル本体（ジョブ状態に依存しない）
+  private async runImmediateBackfill(platform: Platform, accountId: string): Promise<void> {
+    try {
+      const settings: AppSettings = (this.store as unknown as { store: AppSettings }).store;
+      const acct = settings.platforms[platform].accounts.find(a => a.id === accountId);
+      if (!acct) return;
+      const backfillCount = Math.max(0, Math.min(50, acct.backfillRemaining ?? settings.general.initialBackfillCount ?? 0));
+      if (backfillCount <= 0) return;
+      let items = await listRecentItems(platform, accountId, backfillCount, acct.lastCursor);
+      const processed = new Set(acct.processedIds || []);
+      items = items.filter(i => !processed.has(i.id));
+      log.info(`[${platform}:${accountId}] Immediate backfill ${items.length} item(s).`);
+      for (const item of items) {
+        await this.processItem(platform, accountId, item);
+        // lastCursor 更新
+        (this.store as unknown as { set: (k: string, v: unknown) => void }).set(
+          `platforms.${platform}.accounts`,
+          settings.platforms[platform].accounts.map(a => a.id === accountId ? { ...a, lastCursor: item.id } : a)
+        );
+        // processedIds 更新（最大500件）
+        const newAccounts = settings.platforms[platform].accounts.map(a => {
+          if (a.id !== accountId) return a;
+          const arr = Array.isArray(a.processedIds) ? [...a.processedIds] : [];
+          arr.push(item.id);
+          const trimmed = arr.length > 500 ? arr.slice(arr.length - 500) : arr;
+          return { ...a, processedIds: trimmed };
+        });
+        (this.store as unknown as { set: (k: string, v: unknown) => void }).set(`platforms.${platform}.accounts`, newAccounts);
+      }
+      // 残数を0に
+      (this.store as unknown as { set: (k: string, v: unknown) => void }).set(
+        `platforms.${platform}.accounts`,
+        settings.platforms[platform].accounts.map(a => a.id === accountId ? { ...a, backfillRemaining: 0 } : a)
+      );
+      log.info(`[${platform}:${accountId}] Immediate backfill completed.`);
+    } catch (error) {
+      const e = error as Error;
+      log.error(`[${platform}:${accountId}] Immediate backfill failed:`, e.message || String(error));
+      throw error;
+    }
+  }
+
+  // 内部: 最新1件のみの即時処理（重複回避）。処理したらtrueを返す
+  private async runImmediateOneLatest(platform: Platform, accountId: string, opts?: { allowDuplicates?: boolean; noStateUpdate?: boolean }): Promise<boolean> {
+    const settings: AppSettings = (this.store as unknown as { store: AppSettings }).store;
+    const acct = settings.platforms[platform].accounts.find(a => a.id === accountId);
+    if (!acct) return false;
+    let items = await listRecentItems(platform, accountId, 1, opts?.noStateUpdate ? undefined : acct.lastCursor);
+    if (!opts?.allowDuplicates) {
+      const processed = new Set(acct.processedIds || []);
+      items = items.filter(i => !processed.has(i.id));
+    }
+    if (items.length === 0) {
+      log.info(`[${platform}:${accountId}] No item to process for one-off.`);
+      return false;
+    }
+    const item = items[0];
+    await this.processItem(platform, accountId, item);
+    if (!opts?.noStateUpdate) {
+      // 更新: lastCursor と processedIds（最大500件）
+      (this.store as unknown as { set: (k: string, v: unknown) => void }).set(
+        `platforms.${platform}.accounts`,
+        settings.platforms[platform].accounts.map(a => a.id === accountId ? { ...a, lastCursor: item.id } : a)
+      );
+      const newAccounts = settings.platforms[platform].accounts.map(a => {
+        if (a.id !== accountId) return a;
+        const arr = Array.isArray(a.processedIds) ? [...a.processedIds] : [];
+        arr.push(item.id);
+        const trimmed = arr.length > 500 ? arr.slice(arr.length - 500) : arr;
+        return { ...a, processedIds: trimmed };
+      });
+      (this.store as unknown as { set: (k: string, v: unknown) => void }).set(`platforms.${platform}.accounts`, newAccounts);
+    }
+    return true;
+  }
+
+  // すべての有効なプラットフォーム・有効アカウントで最新1件テスト処理を一括実行
+  public async runTestOnceAll(): Promise<{ totalAccounts: number; attempted: number; processed: number; }>{
+    const settings: AppSettings = (this.store as unknown as { store: AppSettings }).store;
+    const tasks: Array<() => Promise<boolean>> = [];
+    let total = 0;
+    for (const platformKey of Object.keys(settings.platforms) as Platform[]) {
+      const ps = settings.platforms[platformKey];
+      if (!ps.enabled) continue;
+      for (const acct of ps.accounts) {
+        if (!acct.isActive) continue;
+        total += 1;
+  tasks.push(() => this.globalQueue.add(() => this.runImmediateOneLatest(platformKey, acct.id, { allowDuplicates: true, noStateUpdate: true })).then(v => !!v));
+      }
+    }
+    let processed = 0;
+    for (const t of tasks) {
+      try { if (await t()) processed += 1; } catch (e) { /* 個別失敗はスキップ */ }
+    }
+    return { totalAccounts: total, attempted: tasks.length, processed };
+  }
+
   private async processItem(platform: Platform, accountId: string, item: { id: string; type: 'screenshot'|'video_url'; url?: string; path?: string }) {
     // スクレイピング済みアイテムから動画生成実行
     let videoPath = '';
@@ -279,7 +411,9 @@ export class JobManager {
       }
     } else if (item.type === 'video_url') {
       const url = item.url || '';
-  videoPath = await generateVideo('', (this.store as unknown as { store: AppSettings }).store, url);
+      // First download the video to a local temp file, then feed to ffmpeg
+      const dl = await downloadVideoToTemp(url);
+      videoPath = await generateVideo('', (this.store as unknown as { store: AppSettings }).store, dl.filepath);
     } else {
       throw new Error(`Unknown item type: ${item.type}`);
     }

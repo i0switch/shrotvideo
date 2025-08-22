@@ -13,6 +13,7 @@ import type { Platform, Account } from "@/core/settings";
 import { Trash2 } from "lucide-react";
 import { useState, useEffect, useRef } from "react"; // Add useEffect
 import { Badge } from "@/components/ui/badge";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 
 const Settings = () => {
   const { settings, isLoading, isError, error, updateSettings, isUpdating } = useSettings();
@@ -45,6 +46,9 @@ const Settings = () => {
       // ignore
     }
   };
+
+  // 初回取得確認ダイアログの状態
+  const [confirmInit, setConfirmInit] = useState<{ open: boolean; platform: Platform | null; accountId: string }>({ open: false, platform: null, accountId: '' });
 
   const handlePlatformLogin = async (platform: 'x') => {
     if (window.auth && window.auth.login) {
@@ -128,7 +132,7 @@ const Settings = () => {
       }
       // 初回バックフィル件数は一般設定から反映（UI上書き可能だった旧promptは廃止）
       const backfill = Math.max(0, Math.min(50, Number(settings.general.initialBackfillCount ?? 0)));
-      const newAccount: Account = { id: newAccountId, isActive: true, backfillRemaining: backfill };
+  const newAccount: Account = { id: newAccountId, isActive: true, backfillRemaining: backfill, processedIds: [] };
       const updatedAccounts = [...currentAccounts, newAccount];
       updateSettings({
         platforms: {
@@ -137,7 +141,9 @@ const Settings = () => {
         },
       });
       setNewAccounts(prev => ({ ...prev, [platform]: '' }));
-      toast({ title: "アカウントが追加されました", description: backfill > 0 ? `初回バックフィル: ${backfill}件` : 'バックフィルなし' });
+  // 確認ダイアログを表示
+  setConfirmInit({ open: true, platform, accountId: newAccountId });
+  toast({ title: "アカウントが追加されました", description: backfill > 0 ? `初回バックフィル候補: ${backfill}件（確認ダイアログで実行可能）` : 'バックフィルなし' });
     }
   };
 
@@ -681,6 +687,31 @@ const Settings = () => {
               <CardDescription>基本的なアプリケーション設定です。</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
+              <div className="rounded-lg border p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <Label>テスト処理</Label>
+                    <p className="text-xs text-muted-foreground">監視対象の全アカウントから最新の1件のみを取得して動画処理を行います（重複は自動スキップ）。</p>
+                  </div>
+                  <Button
+                    variant="default"
+                    onClick={async () => {
+                      try {
+                        const res = await window.electronAPI.testProcessAllOnce();
+                        if (res.ok) {
+                          const s = res.summary!;
+                          toast({ title: 'テスト処理を実行しました', description: `対象アカウント: ${s.totalAccounts} / 実行: ${s.attempted} / 処理: ${s.processed}` });
+                        } else {
+                          toast({ title: 'テスト処理に失敗しました', description: res.error || '不明なエラー', variant: 'destructive' });
+                        }
+                      } catch (e) {
+                        const err = e as Error;
+                        toast({ title: 'テスト処理エラー', description: err?.message || String(e), variant: 'destructive' });
+                      }
+                    }}
+                  >最新1件を処理</Button>
+                </div>
+              </div>
               <div className="space-y-2">
                 <Label htmlFor="outputPath">本番の動画出力先</Label>
                 <div className="flex gap-2">
@@ -742,6 +773,35 @@ const Settings = () => {
           </Card>
         </TabsContent>
       </Tabs>
+      {/* 初回取得 確認ダイアログ */}
+      <AlertDialog open={confirmInit.open} onOpenChange={(open) => setConfirmInit(prev => ({ ...prev, open }))}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>初回取得を実行しますか？</AlertDialogTitle>
+            <AlertDialogDescription>
+              新しく追加したアカウントの過去コンテンツを、一般設定の「初回バックフィル件数」に従って保存・加工します。重複は自動的にスキップされます。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>いいえ</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={async () => {
+                const p = confirmInit.platform;
+                const id = confirmInit.accountId;
+                if (!p || !id) return;
+                try {
+                  const ok = await window.electronAPI.startInitialFetch(p, id);
+                  if (ok) toast({ title: '初回取得を開始しました', description: `${p}: ${id}` });
+                  else toast({ title: '初回取得を開始できませんでした', description: 'ログを確認してください', variant: 'destructive' });
+                } catch (e) {
+                  const err = e as Error;
+                  toast({ title: '初回取得エラー', description: err?.message || String(e), variant: 'destructive' });
+                }
+              }}
+            >はい</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 };

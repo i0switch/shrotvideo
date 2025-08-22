@@ -28,6 +28,9 @@ const electronAPI = {
   // Render test generate
   testGenerate: (filePath: string) => ipcRenderer.invoke('render.testGenerate', filePath) as Promise<string>,
   previewGenerate: (filePath: string) => ipcRenderer.invoke('render.previewGenerate', filePath) as Promise<string>,
+  // Immediate backfill trigger
+  startInitialFetch: (platform: 'x'|'tiktok'|'instagram'|'youtube', accountId: string) => ipcRenderer.invoke('jobs.startInitialFetch', platform, accountId) as Promise<boolean>,
+  testProcessAllOnce: () => ipcRenderer.invoke('jobs.testProcessAllOnce') as Promise<{ ok: boolean; summary?: { totalAccounts: number; attempted: number; processed: number; }; error?: string }>,
 };
 
 // auth API (X のみ対応)

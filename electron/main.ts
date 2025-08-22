@@ -298,6 +298,31 @@ function setupIpcHandlers() {
     jobManager.stop();
   });
 
+  // Immediate initial fetch/backfill trigger from renderer after account addition confirmation
+  ipcMain.handle('jobs.startInitialFetch', async (_e, platform: 'x'|'tiktok'|'instagram'|'youtube', accountId: string) => {
+    try {
+      await jobManager.enqueueImmediateBackfill(platform, accountId);
+      return true;
+    } catch (err) {
+      const e = err as Error;
+      log.error('[jobs.startInitialFetch] failed:', e.message || String(err));
+      return false;
+    }
+  });
+
+  // 監視対象の全アカウントで最新1件のテスト処理を実行
+  ipcMain.handle('jobs.testProcessAllOnce', async () => {
+    try {
+      const summary = await jobManager.runTestOnceAll();
+      log.info('[jobs.testProcessAllOnce] summary:', JSON.stringify(summary));
+      return { ok: true, summary } as const;
+    } catch (err) {
+      const e = err as Error;
+      log.error('[jobs.testProcessAllOnce] failed:', e.message || String(err));
+      return { ok: false, error: e.message || String(err) } as const;
+    }
+  });
+
   ipcMain.handle('get-status', () => jobManager.getStatus());
   // 互換API: 簡易ステータス（renderer.d.ts の IElectronAPI.getStatus に合わせる）
   ipcMain.handle('get-status-simple', () => {
@@ -463,6 +488,41 @@ app.on('ready', () => {
   createWindow();
   setupIpcHandlers();
   try { scheduleDiagnostics(); } catch { /* ignore */ }
+
+  // Optional: Run a one-off test across all accounts on start and save logs into workspace for inspection
+  try {
+    const runTestOnStart = process.env.RUN_TEST_ON_START === '1';
+    if (runTestOnStart) {
+      const ts = Date.now();
+      // Save under workspace root if available, else under userData
+      let outDir = path.join(process.cwd(), 'test-results', `auto-run-${ts}`);
+      try { mkdirSync(outDir, { recursive: true }); } catch { /* ignore */ }
+      // Fallback if mkdir failed (e.g., CWD not writable)
+      if (!existsSyncFS(outDir)) {
+        outDir = path.join(app.getPath('userData'), 'test-results', `auto-run-${ts}`);
+        try { mkdirSync(outDir, { recursive: true }); } catch { /* ignore */ }
+      }
+
+      jobManager.runTestOnceAll()
+        .then(async (summary) => {
+          try {
+            await fs.writeFile(path.join(outDir, 'summary.json'), JSON.stringify(summary, null, 2), 'utf8');
+          } catch { /* ignore */ }
+          try {
+            await ensureJsonlPath();
+            if (jsonlPath) {
+              const buf = await fs.readFile(jsonlPath);
+              await fs.writeFile(path.join(outDir, 'app.log.jsonl'), buf);
+            }
+          } catch { /* ignore */ }
+          log.info('[auto-run] testProcessAllOnce summary saved to:', outDir);
+        })
+        .catch((e) => {
+          const err = e as Error;
+          log.error('[auto-run] testProcessAllOnce failed:', err.message || String(e));
+        });
+    }
+  } catch { /* ignore */ }
 
   // Debug: Global shortcut to test open-file dialog directly from main
   try {

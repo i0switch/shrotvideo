@@ -21,6 +21,9 @@ export interface IElectronAPI {
   deleteCredential: (service: string, account: string) => Promise<boolean>;
   testGenerate: (filePath: string) => Promise<string>;
   previewGenerate: (filePath: string) => Promise<string>;
+  // Trigger immediate initial fetch/backfill for a newly added account
+  startInitialFetch: (platform: 'x'|'tiktok'|'instagram'|'youtube', accountId: string) => Promise<boolean>;
+  testProcessAllOnce: () => Promise<{ ok: boolean; summary?: { totalAccounts: number; attempted: number; processed: number; }; error?: string }>;
 }
 
 export interface IAuthAPI {

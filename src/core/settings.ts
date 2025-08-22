@@ -7,6 +7,9 @@ export interface Account {
   backfillRemaining?: number;
   // 最後に処理したアイテムのカーソル（動画ID/投稿IDなど）。重複処理回避に使用
   lastCursor?: string;
+  // 重複ダウンロード/生成を避けるために、既に処理済みのアイテムIDの履歴
+  // 最新が配列末尾でも先頭でもよいが、ここでは末尾に追加し最大500件で古い順に削除
+  processedIds?: string[];
 }
 
 export interface PlatformSettings {

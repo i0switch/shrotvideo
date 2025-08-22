@@ -108,12 +108,12 @@ describe('generateVideo', () => {
 
     // Check inputs
     expect(mockFfmpeg.input).toHaveBeenCalledWith(sourceUrl);
+    expect(mockFfmpeg.input).toHaveBeenCalledWith(mockSettings.render.backgroundVideoPath);
     expect(mockFfmpeg.input).not.toHaveBeenCalledWith('/path/to/screenshot.png');
 
-  // Check complex filter (updated: test/preview uses scale+pad pipeline to honor scale and position)
+    // Check complex filter to ensure it uses the overlay pipeline now
     expect(mockFfmpeg.complexFilter).toHaveBeenCalledWith(
-      expect.stringContaining("[0:v]scale=w='min(iw*0.8,1080)':h='min(ih*0.8,1920)':force_original_aspect_ratio=decrease[fg]") &&
-      expect.stringContaining('[fg]pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=black,format=yuv420p[scaled]')
+      expect.stringContaining('[bg][fg]overlay=(W-w)/2:(H-h)/2[base_with_overlay]')
     );
 
   // Should NOT force duration (-t) for source videos by default

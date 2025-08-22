@@ -7,11 +7,15 @@ import { Seo } from "@/components/Seo";
 import { NavLink } from "react-router-dom";
 import { useJobManager } from "@/hooks/use-job-manager";
 import { Badge } from "@/components/ui/badge";
+import { Progress } from "@/components/ui/progress";
+import type { Platform } from "@/core/settings";
 
 const Index = () => {
   const { settings } = useSettings();
   const { status, start, stop, isStarting, isStopping } = useJobManager();
   const [logs, setLogs] = useState<string[]>([]);
+  const [testRunning, setTestRunning] = useState(false);
+  const [testProgress, setTestProgress] = useState<{ totalAccounts: number; attempted: number; processed: number } | null>(null);
 
   useEffect(() => {
     // Only subscribe to logs if the electronAPI is available.
@@ -56,11 +60,9 @@ const Index = () => {
             <div className="flex-1 space-y-1">
               <h3 className="font-semibold">監視ステータス</h3>
               <div className="flex items-center gap-2">
-                {status?.isRunning ? (
-                  <Badge variant="success">実行中</Badge>
-                ) : (
-                  <Badge variant="destructive">停止中</Badge>
-                )}
+                <Badge variant={status?.isRunning ? "default" : "destructive"}>
+                  {status?.isRunning ? '実行中' : '停止中'}
+                </Badge>
                 <p className="text-sm text-muted-foreground">
                   待機中のタスク: {status?.queueSize ?? 0}
                 </p>
@@ -83,6 +85,46 @@ const Index = () => {
                 {isStopping ? "停止中..." : "停止"}
               </Button>
             </div>
+          </div>
+
+          {/* テスト実行の簡易進捗表示 */}
+          <div className="p-4 border rounded-lg space-y-3">
+            <div className="flex items-center justify-between">
+              <h3 className="font-semibold">テスト処理（最新1件）</h3>
+              <Button
+                onClick={async () => {
+                  if (testRunning) return;
+                  setTestRunning(true);
+                  setTestProgress({ totalAccounts: 0, attempted: 0, processed: 0 });
+                  try {
+                    const res = await window.electronAPI.testProcessAllOnce();
+                    if (res.ok) {
+                      setTestProgress(res.summary!);
+                    } else {
+                      setTestProgress(null);
+                    }
+                  } catch {
+                    setTestProgress(null);
+                  } finally {
+                    setTestRunning(false);
+                  }
+                }}
+                disabled={testRunning}
+              >{testRunning ? '実行中...' : '全アカウントで実行'}</Button>
+            </div>
+            {testRunning && (
+              <div className="space-y-2">
+                <Progress value={ testProgress ? Math.min(100, Math.round(((testProgress.attempted||0) / Math.max(1, (testProgress.totalAccounts||0))) * 100)) : 10 } />
+                <p className="text-xs text-muted-foreground">
+                  実行中... {testProgress?.attempted ?? 0} / {testProgress?.totalAccounts ?? 0}
+                </p>
+              </div>
+            )}
+            {!testRunning && testProgress && (
+              <p className="text-xs text-muted-foreground">
+                実行結果: 対象 {testProgress.totalAccounts} / 実行 {testProgress.attempted} / 処理 {testProgress.processed}
+              </p>
+            )}
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-4 text-sm">
