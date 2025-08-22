@@ -1,5 +1,6 @@
 import { ipcMain } from 'electron';
-import { vi } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+
 describe('dialogs.ts', () => {
   it('should register IPC handlers for pickFolder and pickFile', () => {
     // ipcMainをモック

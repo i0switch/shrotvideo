@@ -27,6 +27,11 @@ const Settings = () => {
   const [topHeightStr, setTopHeightStr] = useState<string>('');
   const [bottomHeightStr, setBottomHeightStr] = useState<string>('');
 
+  // テスト用動画パス（背景動画とは独立して管理）
+  // フォールバックは実行時に settings.render.backgroundVideoPath を参照するため、
+  // 初期同期は行わない（背景動画変更時に自動で追従できるようにする）。
+  const [testVideoPath, setTestVideoPath] = useState<string>('');
+
   // New: State for login credentials
   // X のログイン状態のみ扱う
   const [cookieSaved, setCookieSaved] = useState<Record<'x', boolean>>({ x: false });
@@ -80,6 +85,25 @@ const Settings = () => {
     }
   };
 
+  // テスト用動画の選択（設定には保存しない）
+  const handleSelectTestVideo = async () => {
+    try {
+      const filters = [{ name: 'Videos', extensions: ['mp4','mov','avi','mkv','webm'] }];
+      const result = (window.files && window.files.pickFile)
+        ? await window.files.pickFile('testVideo', filters)
+        : await window.electronAPI.openFileDialog();
+      if (result) {
+        setTestVideoPath(result);
+        toast({ title: 'テスト用動画を選択しました', description: result });
+      } else if (result === null) {
+        toast({ title: '選択がキャンセルされました', description: 'ダイアログが閉じられました。' });
+      }
+    } catch (e) {
+      console.error('[select-test-video] failed', e);
+      toast({ title: '選択に失敗しました', description: (e as Error)?.message || String(e), variant: 'destructive' });
+    }
+  };
+
   const handleSelectDirectory = async () => {
     const result = (window.files && window.files.pickFolder)
       ? await window.files.pickFolder('outputDir')
@@ -102,14 +126,8 @@ const Settings = () => {
         toast({ title: "エラー", description: "このアカウントは既に追加されています。", variant: "destructive" });
         return;
       }
-      // 初回バックフィル件数をユーザーに確認
-      let backfill = 0;
-      try {
-        const answer = window.prompt(`${platform} の ${newAccountId} を監視に追加します。\n初回に過去何件まで遡って動画化しますか？\n(0でスキップ)`, '3');
-        backfill = Math.max(0, Math.min(50, Number(answer ?? '0')));
-      } catch {
-        // ignore prompt errors (e.g., blocked)
-      }
+      // 初回バックフィル件数は一般設定から反映（UI上書き可能だった旧promptは廃止）
+      const backfill = Math.max(0, Math.min(50, Number(settings.general.initialBackfillCount ?? 0)));
       const newAccount: Account = { id: newAccountId, isActive: true, backfillRemaining: backfill };
       const updatedAccounts = [...currentAccounts, newAccount];
       updateSettings({
@@ -603,22 +621,24 @@ const Settings = () => {
               <div className="space-y-2">
                 <Label>テスト用動画</Label>
                 <div className="flex gap-2">
-                  <Input value={settings?.render.backgroundVideoPath || ''} readOnly placeholder="テスト用動画ファイル..." />
-                  <Button variant="outline" onClick={() => handleSelectFile('backgroundVideoPath')}>選択</Button>
+                  <Input value={testVideoPath} readOnly placeholder="テスト用動画ファイル..." />
+                  <Button variant="outline" onClick={handleSelectTestVideo}>選択</Button>
                 </div>
-                <p className="text-xs text-muted-foreground">テストはこの動画をソースとして合成します（Xスクショ無し）。</p>
+                <p className="text-xs text-muted-foreground">テストはこの動画をソースとして合成します（Xスクショ無し）。背景動画設定とは独立して選択できます。</p>
               </div>
               <div>
                 <Button
                   onClick={async () => {
-                    const fp = settings?.render.backgroundVideoPath;
+                    // テスト用動画が未選択の場合は背景動画をフォールバックとして使用
+                    const fp = testVideoPath || settings?.render.backgroundVideoPath || '';
                     if (!fp) {
-                      toast({ title: 'テスト不可', description: 'テスト用動画を選択してください。', variant: 'destructive' });
+                      toast({ title: 'テスト不可', description: 'テスト用動画か背景動画を設定してください。', variant: 'destructive' });
                       return;
                     }
                     try {
                       const out = await window.electronAPI.testGenerate(fp);
-                      toast({ title: '合成テスト完了', description: out });
+                      const srcLabel = testVideoPath ? 'テスト用動画' : '背景動画';
+                      toast({ title: '合成テスト完了', description: `${srcLabel}で生成: ${out}` });
                     } catch (e) {
                       const err = e as Error & { message?: string };
                       toast({ title: '合成テスト失敗', description: err?.message || String(e), variant: 'destructive' });
@@ -631,14 +651,16 @@ const Settings = () => {
                   variant="outline"
                   className="ml-2"
                   onClick={async () => {
-                    const fp = settings?.render.backgroundVideoPath;
+                    // テスト用動画が未選択の場合は背景動画をフォールバックとして使用
+                    const fp = testVideoPath || settings?.render.backgroundVideoPath || '';
                     if (!fp) {
-                      toast({ title: 'プレビュー不可', description: 'テスト用動画を選択してください。', variant: 'destructive' });
+                      toast({ title: 'プレビュー不可', description: 'テスト用動画か背景動画を設定してください。', variant: 'destructive' });
                       return;
                     }
                     try {
                       const out = await window.electronAPI.previewGenerate(fp);
-                      toast({ title: 'プレビュー生成完了', description: out });
+                      const srcLabel = testVideoPath ? 'テスト用動画' : '背景動画';
+                      toast({ title: 'プレビュー生成完了', description: `${srcLabel}で生成: ${out}` });
                     } catch (e) {
                       const err = e as Error & { message?: string };
                       toast({ title: 'プレビュー生成失敗', description: err?.message || String(e), variant: 'destructive' });
@@ -665,6 +687,18 @@ const Settings = () => {
                   <Input id="outputPath" value={settings?.general.outputPath || ''} readOnly />
                   <Button variant="outline" onClick={handleSelectDirectory}>選択</Button>
                 </div>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="initialBackfillCount">初回バックフィル件数</Label>
+                <Input
+                  id="initialBackfillCount"
+                  type="number"
+                  min={0}
+                  max={50}
+                  value={settings?.general.initialBackfillCount ?? 0}
+                  onChange={(e) => settings && updateSettings({ general: { ...settings.general, initialBackfillCount: Math.max(0, Math.min(50, Number(e.target.value) || 0)) } })}
+                />
+                <p className="text-xs text-muted-foreground">新規に追加した YouTube / TikTok / Instagram アカウントの初回監視時に、過去からこの件数だけ保存・加工します。</p>
               </div>
               <div className="space-y-2">
                 <Label htmlFor="diagnosticLogging">診断ログ（詳細状況を定期出力）</Label>

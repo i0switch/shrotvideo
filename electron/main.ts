@@ -52,6 +52,7 @@ const store = new Store<AppSettings>({
   testOutputPath: app.getPath('videos'),
   diagnosticLogging: false,
   diagnosticIntervalSec: 10,
+  initialBackfillCount: 3,
     },
     platforms: {
       x: {
@@ -298,6 +299,19 @@ function setupIpcHandlers() {
   });
 
   ipcMain.handle('get-status', () => jobManager.getStatus());
+  // 互換API: 簡易ステータス（renderer.d.ts の IElectronAPI.getStatus に合わせる）
+  ipcMain.handle('get-status-simple', () => {
+    const full = jobManager.getStatus() as unknown as {
+      isRunning: boolean;
+      globalQueueSize: number;
+      globalPendingTasks: number;
+    };
+    return {
+      isRunning: !!full.isRunning,
+      queueSize: Number(full.globalQueueSize || 0),
+      pendingTasks: Number(full.globalPendingTasks || 0),
+    };
+  });
 
   // Render test generate: use selected video as source (Function B)
   ipcMain.handle('render.testGenerate', async (_e, filePath: string) => {
@@ -332,9 +346,9 @@ function setupIpcHandlers() {
   const s = getAllSettings();
       const settings: AppSettings = JSON.parse(JSON.stringify(s));
       if (s.general.testOutputPath) settings.general.outputPath = s.general.testOutputPath;
-      // 一時的に durationSec を短く
-      settings.render.durationSec = Math.min(2, Math.max(1, settings.render.durationSec || 1));
-      const out = await generateVideo('', settings, filePath);
+  // 一時的に durationSec を短くし、プレビュー時のみ強制適用
+  settings.render.durationSec = Math.min(2, Math.max(1, settings.render.durationSec || 1));
+  const out = await generateVideo('', settings, filePath, { forceDuration: true });
       return out;
     } catch (err) {
       const e = err as Error;

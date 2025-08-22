@@ -8,6 +8,7 @@ const JOB_STATUS_QUERY_KEY = ['job-status'];
 const mockStatus: JobStatus = {
   isRunning: false,
   queueSize: 0,
+  pendingTasks: 0,
 };
 
 export function useJobManager() {

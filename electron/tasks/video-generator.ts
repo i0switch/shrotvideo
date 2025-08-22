@@ -138,7 +138,8 @@ function getFFmpegPreset(quality: 'fast' | 'standard' | 'high' | string): string
 export function generateVideo(
   screenshotPath: string,
   settings: AppSettings,
-  sourceVideoUrl?: string
+  sourceVideoUrl?: string,
+  opts?: { forceDuration?: boolean }
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     // Ensure ffmpeg binary is configured (fallback to PATH if not available)
@@ -170,24 +171,40 @@ export function generateVideo(
 
     const topText = captionsTop;
     const bottomText = captionsBottom;
-    const topFontSize = getFontSize(videoHeight, 'top');
-    const bottomFontSize = getFontSize(videoHeight, 'bottom');
-    const topOffset = toNumberOr(rawRender?.topCaptionOffset, 0);
-    const bottomOffset = toNumberOr(rawRender?.bottomCaptionOffset, 0);
-    const yTopExpr = `${captionPadding}+${topOffset}`;
-    const yBottomExpr = `h-text_h-${captionPadding}+${bottomOffset}`;
+  const topFontSize = getFontSize(videoHeight, 'top');
+  const bottomFontSize = getFontSize(videoHeight, 'bottom');
+  const topOffset = toNumberOr(rawRender?.topCaptionOffset, 0);
+  const bottomOffset = toNumberOr(rawRender?.bottomCaptionOffset, 0);
+  // Full-width caption boxes (px). 0 -> no full-width box.
+  const topBoxHeight = Math.max(0, toNumberOr(rawRender?.topCaptionHeight, Math.round(videoHeight * (120 / 1920))));
+  const bottomBoxHeight = Math.max(0, toNumberOr(rawRender?.bottomCaptionHeight, Math.round(videoHeight * (160 / 1920))));
+  const topPos = (rawRender?.topCaptionPosition as 'top' | 'center' | 'bottom') || 'center';
+  const bottomPos = (rawRender?.bottomCaptionPosition as 'top' | 'center' | 'bottom') || 'center';
+  // Defaults when not using full-width boxes
+  const yTopExprDefault = `${captionPadding}+${topOffset}`;
+  const yBottomExprDefault = `h-text_h-${captionPadding}+${bottomOffset}`;
 
     const ffmpegCommand = ffmpeg();
     const complexFilter: string[] = [];
 
-    // Base input
-    const inputVideoPath = sourceVideoUrl || rawRender?.backgroundVideoPath;
-    if (!inputVideoPath) return reject(new Error('A background or source video must be provided.'));
-    ffmpegCommand.input(inputVideoPath.startsWith('http') ? inputVideoPath : normalizePath(inputVideoPath));
+    // Base input(s)
+    const bgPath = rawRender?.backgroundVideoPath && rawRender.backgroundVideoPath.trim()
+      ? normalizePath(rawRender.backgroundVideoPath.trim())
+      : '';
+    const srcPath = sourceVideoUrl && sourceVideoUrl.trim()
+      ? (sourceVideoUrl.startsWith('http') ? sourceVideoUrl : normalizePath(sourceVideoUrl.trim()))
+      : '';
 
-    // Optional screenshot overlay; otherwise split base video to apply scale on FG (so scale affects inserted video)
-    let nextInputIndex = 1; // base video is 0
-    if (!sourceVideoUrl && screenshotPath) {
+    if (!bgPath && !srcPath) return reject(new Error('A background or source video must be provided.'));
+
+    let nextInputIndex = 0;
+    let currentVideo: string;
+
+    // Case A: Screenshot overlay (requires background as base)
+    if (!srcPath && screenshotPath) {
+      if (!bgPath) return reject(new Error('Background video is required for screenshot overlay.'));
+      // Input order: background (0), screenshot (1)
+      ffmpegCommand.input(bgPath);
       ffmpegCommand.input(normalizePath(screenshotPath));
       const screenshotIndex = 1;
       const overlayYExpr = overlayPosition === 'top-center' ? `0` : overlayPosition === 'bottom-center' ? `H-h` : `(H-h)/2`;
@@ -196,20 +213,39 @@ export function generateVideo(
         `[0:v]scale=${videoWidth}:${videoHeight},format=yuv420p[bg]`,
         `[bg][fg]overlay=(W-w)/2:${overlayYExpr}[base_with_overlay]`
       );
+      currentVideo = '[base_with_overlay]';
       nextInputIndex = 2;
-    } else {
+    } else if (srcPath && bgPath) {
+      // Case B: Background fixed + source video overlay
+      // Input order: background (0), source (1)
+      ffmpegCommand.input(bgPath);
+      ffmpegCommand.input(srcPath);
       const overlayYExpr = overlayPosition === 'top-center' ? `0` : overlayPosition === 'bottom-center' ? `H-h` : `(H-h)/2`;
       complexFilter.push(
-        `[0:v]split[bgv][fgv]`,
-        `[bgv]scale=${videoWidth}:${videoHeight},format=yuv420p[bg]`,
-        `[fgv]scale=w='min(iw*${scale},${videoWidth})':h='min(ih*${scale},${videoHeight})':force_original_aspect_ratio=decrease[fg]`,
+        `[1:v]scale=w='min(iw*${scale},${videoWidth})':h='min(ih*${scale},${videoHeight})':force_original_aspect_ratio=decrease[fg]`,
+        `[0:v]scale=${videoWidth}:${videoHeight},format=yuv420p[bg]`,
         `[bg][fg]overlay=(W-w)/2:${overlayYExpr}[base_with_overlay]`
       );
+      currentVideo = '[base_with_overlay]';
+      nextInputIndex = 2;
+    } else {
+      // Case C: Single video (source or background only) -> scale + pad
+      const single = srcPath || bgPath; // at least one exists here
+      ffmpegCommand.input(single);
+      const padYExpr = overlayPosition === 'top-center'
+        ? `0`
+        : overlayPosition === 'bottom-center'
+          ? `(oh-ih)`
+          : `(oh-ih)/2`;
+      complexFilter.push(
+        `[0:v]scale=w='min(iw*${scale},${videoWidth})':h='min(ih*${scale},${videoHeight})':force_original_aspect_ratio=decrease[fg]`,
+        `[fg]pad=${videoWidth}:${videoHeight}:(ow-iw)/2:${padYExpr}:color=black,format=yuv420p[scaled]`
+      );
+      currentVideo = '[scaled]';
+      nextInputIndex = 1;
     }
 
-    const currentVideo = complexFilter.length > 0 ? '[base_with_overlay]' : '[0:v]';
-
-    // Text with box around text only
+    // Text with optional full-width caption boxes
     const fontPath = fontFileFromSettings || getDefaultFontPath();
     if (fontPath) {
       log.info('[video-generator] using fontfile:', fontPath);
@@ -217,12 +253,40 @@ export function generateVideo(
       const boxColor = `${toFfmpegColor(teleTextBg, 'black')}@${captionBgOpacity}`;
       const textColor = toFfmpegColor(captionTextColor, 'white');
       let curr = currentVideo;
+      // Draw full-width boxes first if requested
+      if (topBoxHeight > 0) {
+        complexFilter.push(`${curr}drawbox=x=0:y=0:w=iw:h=${topBoxHeight}:color=${boxColor}:t=fill[v_with_top_box]`);
+        curr = '[v_with_top_box]';
+      }
+      if (bottomBoxHeight > 0) {
+        complexFilter.push(`${curr}drawbox=x=0:y=h-${bottomBoxHeight}:w=iw:h=${bottomBoxHeight}:color=${boxColor}:t=fill[v_with_btm_box]`);
+        curr = '[v_with_btm_box]';
+      }
+
+      // Compute Y positions for text
+      const yTopExpr = topBoxHeight > 0
+        ? (topPos === 'top'
+            ? `${Math.max(4, captionPadding)}+${topOffset}`
+            : topPos === 'bottom'
+              ? `${Math.max(4, captionPadding)}+${topBoxHeight}-text_h-${Math.max(4, captionPadding)}+${topOffset}`
+              : `${Math.max(4, captionPadding)}+(${topBoxHeight}-text_h)/2+${topOffset}`)
+        : yTopExprDefault;
+      const yBottomExpr = bottomBoxHeight > 0
+        ? (bottomPos === 'top'
+            ? `h-${bottomBoxHeight}+${Math.max(4, captionPadding)}+${bottomOffset}`
+            : bottomPos === 'bottom'
+              ? `h-text_h-${Math.max(4, captionPadding)}+${bottomOffset}`
+              : `h-${bottomBoxHeight}+(${bottomBoxHeight}-text_h)/2+${bottomOffset}`)
+        : yBottomExprDefault;
+
       if (topText && topText.trim().length > 0) {
-        complexFilter.push(`${curr}drawtext=text='${topText}':x=(w-text_w)/2:y=${yTopExpr}:fontcolor=${textColor}:fontsize=${topFontSize}:box=1:boxcolor=${boxColor}:boxborderw=${captionPadding}${fontOpt}[v_t1]`);
+        const topBoxArgs = topBoxHeight > 0 ? '' : `:box=1:boxcolor=${boxColor}:boxborderw=${captionPadding}`;
+        complexFilter.push(`${curr}drawtext=text='${topText}':x=(w-text_w)/2:y=${yTopExpr}:fontcolor=${textColor}:fontsize=${topFontSize}${topBoxArgs}${fontOpt}[v_t1]`);
         curr = '[v_t1]';
       }
       if (bottomText && bottomText.trim().length > 0) {
-        complexFilter.push(`${curr}drawtext=text='${bottomText}':x=(w-text_w)/2:y=${yBottomExpr}:fontcolor=${textColor}:fontsize=${bottomFontSize}:box=1:boxcolor=${boxColor}:boxborderw=${captionPadding}${fontOpt}`);
+        const btmBoxArgs = bottomBoxHeight > 0 ? '' : `:box=1:boxcolor=${boxColor}:boxborderw=${captionPadding}`;
+        complexFilter.push(`${curr}drawtext=text='${bottomText}':x=(w-text_w)/2:y=${yBottomExpr}:fontcolor=${textColor}:fontsize=${bottomFontSize}${btmBoxArgs}${fontOpt}`);
       }
     } else {
       log.warn('[video-generator] no fontfile found. Skipping drawtext to avoid fontconfig crash.');
@@ -233,26 +297,42 @@ export function generateVideo(
     log.info('[video-generator] filterGraph:', filterGraph);
     ffmpegCommand.complexFilter(filterGraph);
 
-    // Optional BGM input and audio mapping
+  // Optional BGM input and audio mapping
     let bgmInputIndex: number | undefined;
     if (rawRender?.bgmPath) {
       ffmpegCommand.input(normalizePath(rawRender.bgmPath));
-      bgmInputIndex = nextInputIndex; // after base and optional screenshot
+      bgmInputIndex = nextInputIndex; // after base + optional overlay input(s)
       nextInputIndex += 1;
     }
 
     ffmpegCommand
-      .duration(durationSec)
-      .videoCodec('libx264')
-      .outputOptions([
-        '-preset', getFFmpegPreset(qualityPreset),
-        '-pix_fmt', 'yuv420p',
-        '-c:a', 'aac',
-        '-shortest'
-      ]);
+      .videoCodec('libx264');
 
-    // Map audio: background/source video and optional BGM
-    ffmpegCommand.outputOptions(['-map', '0:a?']);
+    // Duration の適用ルール:
+    // - スクショ（overlay）時は設定の durationSec を適用
+    // - プラットフォーム由来などのソース動画時はデフォルトで元尺のまま
+    // - ただし opts.forceDuration=true の場合は例外的に適用（プレビュー用）
+    const shouldApplyDuration = (!!screenshotPath && screenshotPath.trim().length > 0) || !!opts?.forceDuration;
+
+    const commonOutputOpts = [
+      '-preset', getFFmpegPreset(qualityPreset),
+      '-pix_fmt', 'yuv420p',
+      '-c:a', 'aac',
+      '-shortest',
+    ];
+    if (shouldApplyDuration) {
+      ffmpegCommand.outputOptions(['-t', String(durationSec), ...commonOutputOpts]);
+    } else {
+      ffmpegCommand.outputOptions(commonOutputOpts);
+    }
+
+  // Map audio: prefer source audio when source exists, else background/single input audio
+  // Input layout:
+  //  - Screenshot overlay: [0]=background, [1]=image -> prefer 0
+  //  - Src+Bg overlay: [0]=background, [1]=source -> prefer 1
+  //  - Single video (src or bg): [0]=that video -> prefer 0
+  const preferAudioIndex = (srcPath && bgPath) ? 1 : 0;
+  ffmpegCommand.outputOptions(['-map', `${preferAudioIndex}:a?`]);
     if (bgmInputIndex !== undefined) {
       ffmpegCommand.outputOptions(['-map', `${bgmInputIndex}:a?`]);
     }

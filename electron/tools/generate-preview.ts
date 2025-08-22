@@ -36,7 +36,7 @@ async function main() {
     }
   } as AppSettings;
 
-  const out = await generateVideo('', settings, bg);
+  const out = await generateVideo('', settings, bg, { forceDuration: true });
   console.log('[preview-cli] generated:', out);
 }
 

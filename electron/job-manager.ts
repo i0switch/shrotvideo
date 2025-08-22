@@ -48,7 +48,8 @@ export class JobManager {
         const platform = platformKey as Platform;
         const savedPlatformState = savedJobState.platforms[platform];
         // Only restore if it was running, otherwise treat as idle
-        const status = savedPlatformState.status === 'running' ? 'idle' : savedPlatformState.status;
+  // 前回 running だったジョブは、起動後に再開するため idle として復元し、start() 時に有効化
+  const status = savedPlatformState.status === 'running' ? 'idle' : savedPlatformState.status;
         this.jobs.set(platform, {
           status: status,
           consecutiveFails: savedPlatformState.consecutiveFails,
@@ -142,10 +143,15 @@ export class JobManager {
     const run = () => {
       if (job.status !== 'running') return;
       log.info(`Adding monitoring tasks for ${platform} to the global queue.`);
+      let delay = 0;
       platformSettings.accounts.forEach((account: Account) => {
-        if (account.isActive) {
-          this.globalQueue.add(() => this.runMonitoringTask(platform, account.id));
-        }
+        if (!account.isActive) return;
+        const thisDelay = delay;
+        delay += Math.max(0, platformSettings.scrapeDelayMs || 0);
+        this.globalQueue.add(async () => {
+          if (thisDelay > 0) await new Promise(r => setTimeout(r, thisDelay));
+          return this.runMonitoringTask(platform, account.id);
+        });
       });
     };
     
@@ -193,12 +199,14 @@ export class JobManager {
       // 設定から対象アカウントの状態を参照
   const settings: AppSettings = (this.store as unknown as { store: AppSettings }).store;
       const acct = settings.platforms[platform].accounts.find(a => a.id === accountId);
-      const backfillCount = Math.max(0, acct?.backfillRemaining ?? 0);
+  // 一般設定 initialBackfillCount はアカウント追加時に backfillRemaining に反映済み
+  // ここでは残数を参照し、初回のみ実行。完了後は0に設定して以後は lastCursor を用いて新規のみを処理
+  const backfillCount = Math.max(0, Math.min(50, acct?.backfillRemaining ?? 0));
 
       if (backfillCount > 0) {
         // 初回バックフィル：過去N件のアイテム一覧を取得して順次処理
         // listRecentItems は { id, type, url?, screenshotSelector? }[] を返す想定
-        const items = await listRecentItems(platform, accountId, backfillCount, acct?.lastCursor);
+  const items = await listRecentItems(platform, accountId, backfillCount, acct?.lastCursor);
         log.info(`[${platform}:${accountId}] Backfill ${items.length} item(s).`);
         for (const item of items) {
           await this.processItem(platform, accountId, item);
@@ -265,13 +273,13 @@ export class JobManager {
         const scrapeResult = await scrapeAccount(platform, accountId, (this.store as unknown as { store: AppSettings }).store);
         if (!scrapeResult) throw new Error('Scraping did not return a result.');
         if (scrapeResult.type !== 'screenshot') throw new Error('Expected screenshot item.');
-        videoPath = await generateVideo(scrapeResult.path, (this.store as unknown as { store: AppSettings }).store);
+  videoPath = await generateVideo(scrapeResult.path, (this.store as unknown as { store: AppSettings }).store);
       } else {
-        videoPath = await generateVideo(item.path, (this.store as unknown as { store: AppSettings }).store);
+  videoPath = await generateVideo(item.path, (this.store as unknown as { store: AppSettings }).store);
       }
     } else if (item.type === 'video_url') {
       const url = item.url || '';
-      videoPath = await generateVideo('', (this.store as unknown as { store: AppSettings }).store, url);
+  videoPath = await generateVideo('', (this.store as unknown as { store: AppSettings }).store, url);
     } else {
       throw new Error(`Unknown item type: ${item.type}`);
     }

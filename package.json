@@ -22,6 +22,7 @@
     "package": "npm run build && npm run dist",
   "clean": "rimraf dist release",
   "run:urls": "node ./dist/electron/electron/tools/generate-from-urls.js",
+  "run:batch": "node ./dist/electron/electron/tools/generate-batch-accounts.js",
   "start:prod": "npm run build && cross-env NODE_ENV=production electron ."
   },
   "build": {

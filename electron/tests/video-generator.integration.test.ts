@@ -51,10 +51,10 @@ describe('video-generator integration (real ffmpeg)', () => {
     await ensureDir(testData);
     // Generate dummy media using ffmpeg so we don't rely on repo assets
     await new Promise<void>((resolve, reject) => {
-      // background.mp4: 1080x1920 black, 5s
+      // background.mp4: 1080x1920 black, 15s
       ffmpeg()
         // color source via lavfi
-        .input('color=c=black:s=1080x1920:d=5')
+        .input('color=c=black:s=1080x1920:d=15')
         .inputOptions(['-f', 'lavfi'])
         .outputOptions(['-pix_fmt', 'yuv420p'])
         .on('end', () => resolve())
@@ -62,9 +62,9 @@ describe('video-generator integration (real ffmpeg)', () => {
         .save(path.join(testData, 'background.mp4'));
     });
     await new Promise<void>((resolve, reject) => {
-      // bgm.wav: 5s sine wave
+      // bgm.wav: 15s sine wave
       ffmpeg()
-        .input('sine=frequency=1000:duration=5')
+        .input('sine=frequency=1000:duration=15')
         .inputOptions(['-f', 'lavfi'])
         .outputOptions(['-ac', '2', '-ar', '44100'])
         .on('end', () => resolve())
@@ -94,6 +94,26 @@ describe('video-generator integration (real ffmpeg)', () => {
     expect(await exists(out)).toBe(true);
     const stat = await fs.stat(out);
     expect(stat.size).toBeGreaterThan(10_000); // at least some bytes
+
+    // Verify video properties with ffprobe
+    const metadata = await new Promise<ffmpeg.FfprobeData>((resolve, reject) => {
+      ffmpeg.ffprobe(out, (err, data) => {
+        if (err) return reject(err);
+        resolve(data);
+      });
+    });
+
+    // Check video stream
+    const videoStream = metadata.streams.find(s => s.codec_type === 'video');
+    expect(videoStream).toBeDefined();
+    expect(videoStream?.width).toBe(baseSettings.render.resolution.width);
+    expect(videoStream?.height).toBe(baseSettings.render.resolution.height);
+    expect(Math.round(Number(videoStream?.duration || 0))).toBe(baseSettings.render.durationSec);
+
+    // Check audio stream
+    const audioStream = metadata.streams.find(s => s.codec_type === 'audio');
+    expect(audioStream).toBeDefined();
+    expect(Math.round(Number(audioStream?.duration || 0))).toBe(baseSettings.render.durationSec);
   }, 120_000);
 
   it('re-encodes a source video to vertical with captions (no screenshot overlay)', async () => {
@@ -103,6 +123,24 @@ describe('video-generator integration (real ffmpeg)', () => {
     expect(await exists(out)).toBe(true);
     const stat = await fs.stat(out);
     expect(stat.size).toBeGreaterThan(10_000);
+
+    // Verify video properties with ffprobe
+    const metadata = await new Promise<ffmpeg.FfprobeData>((resolve, reject) => {
+      ffmpeg.ffprobe(out, (err, data) => {
+        if (err) return reject(err);
+        resolve(data);
+      });
+    });
+
+    const videoStream = metadata.streams.find(s => s.codec_type === 'video');
+    expect(videoStream).toBeDefined();
+    expect(videoStream?.width).toBe(baseSettings.render.resolution.width);
+    expect(videoStream?.height).toBe(baseSettings.render.resolution.height);
+  // スクショではないため durationSec は適用せず、元動画の長さ（15s）を維持する
+  expect(Math.round(Number(videoStream?.duration || 0))).toBe(15);
+
+    const audioStream = metadata.streams.find(s => s.codec_type === 'audio');
+    expect(audioStream).toBeDefined();
   }, 120_000);
 
   it('produces files compatible with Shorts/Reels/TikTok defaults (1080x1920 <= 60s)', async () => {
@@ -121,6 +159,20 @@ describe('video-generator integration (real ffmpeg)', () => {
       expect(await exists(out)).toBe(true);
       const stat = await fs.stat(out);
       expect(stat.size).toBeGreaterThan(10_000);
+
+      // Verify video properties with ffprobe
+      const metadata = await new Promise<ffmpeg.FfprobeData>((resolve, reject) => {
+        ffmpeg.ffprobe(out, (err, data) => {
+          if (err) return reject(err);
+          resolve(data);
+        });
+      });
+
+      const videoStream = metadata.streams.find(s => s.codec_type === 'video');
+      expect(videoStream).toBeDefined();
+      expect(videoStream?.width).toBe(p.resolution.width);
+      expect(videoStream?.height).toBe(p.resolution.height);
+      expect(Math.round(Number(videoStream?.duration || 0))).toBe(p.durationSec);
     }
   }, 240_000);
 
@@ -140,6 +192,20 @@ describe('video-generator integration (real ffmpeg)', () => {
       const stat = await fs.stat(out);
       // sanity: file size must be > 10KB
       expect(stat.size).toBeGreaterThan(10_000);
+
+      // Verify video properties with ffprobe
+      const metadata = await new Promise<ffmpeg.FfprobeData>((resolve, reject) => {
+        ffmpeg.ffprobe(out, (err, data) => {
+          if (err) return reject(err);
+          resolve(data);
+        });
+      });
+
+      const videoStream = metadata.streams.find(st => st.codec_type === 'video');
+      expect(videoStream).toBeDefined();
+      expect(videoStream?.width).toBe(baseSettings.render.resolution.width);
+      expect(videoStream?.height).toBe(baseSettings.render.resolution.height);
+      expect(Math.round(Number(videoStream?.duration || 0))).toBe(s.duration);
     }
   }, 180_000);
 });

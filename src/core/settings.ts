@@ -24,6 +24,8 @@ export interface AppSettings {
   // 診断ログ: 詳細状況を一定間隔で出力
   diagnosticLogging?: boolean;
   diagnosticIntervalSec?: number; // 何秒おきに出力するか
+  // 初回監視時に遡って保存・加工する件数（YouTube/TikTok/Instagramの新規アカウントに適用）
+  initialBackfillCount?: number;
   };
   platforms: {
     x: PlatformSettings;

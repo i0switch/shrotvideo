@@ -8,6 +8,8 @@ const mockFfmpeg = {
   input: vi.fn().mockReturnThis(),
   complexFilter: vi.fn().mockReturnThis(),
   outputOptions: vi.fn().mockReturnThis(),
+  duration: vi.fn().mockReturnThis(),
+  videoCodec: vi.fn().mockReturnThis(),
   on: vi.fn((event, callback) => {
     if (event === 'end') {
       // Immediately call the 'end' callback to resolve the promise
@@ -75,9 +77,9 @@ describe('generateVideo', () => {
     expect(mockFfmpeg.input).toHaveBeenCalledWith('/path/to/screenshot.png');
     expect(mockFfmpeg.input).toHaveBeenCalledWith('/path/to/bgm.mp3');
 
-    // Check complex filter
+    // Check complex filter (updated: overlay fg uses min(iw*scale, W/H) with aspect ratio)
     expect(mockFfmpeg.complexFilter).toHaveBeenCalledWith(
-      expect.stringContaining('[1:v]scale=iw*0.8:-1[fg]') &&
+      expect.stringContaining("[1:v]scale=w='min(iw*0.8,1080)':h='min(ih*0.8,1920)':force_original_aspect_ratio=decrease[fg]") &&
       expect.stringContaining('[0:v]scale=1080:1920,format=yuv420p[bg]') &&
       expect.stringContaining('[bg][fg]overlay=(W-w)/2:(H-h)/2[base_with_overlay]') &&
       expect.stringContaining('[base_with_overlay]drawbox=x=0:y=0:w=iw:h=120:color=#000000@1:t=fill[v_with_top_box]') &&
@@ -87,10 +89,14 @@ describe('generateVideo', () => {
       expect.stringContaining('fontsize=42') // Bottom font size for 1920px height
     );
 
-    // Check output options
-    expect(mockFfmpeg.outputOptions).toHaveBeenCalledWith(expect.arrayContaining(['-t 10']));
-    expect(mockFfmpeg.outputOptions).toHaveBeenCalledWith(expect.arrayContaining(['-preset veryfast']));
-    expect(mockFfmpeg.outputOptions).toHaveBeenCalledWith(expect.arrayContaining(['-shortest']));
+  // Check output options
+  expect(mockFfmpeg.outputOptions).toHaveBeenCalledWith(expect.arrayContaining(['-t', '10']));
+  expect(mockFfmpeg.outputOptions).toHaveBeenCalledWith(expect.arrayContaining(['-preset', 'veryfast']));
+  expect(mockFfmpeg.outputOptions).toHaveBeenCalledWith(expect.arrayContaining(['-pix_fmt', 'yuv420p']));
+  expect(mockFfmpeg.outputOptions).toHaveBeenCalledWith(expect.arrayContaining(['-c:a', 'aac']));
+  expect(mockFfmpeg.outputOptions).toHaveBeenCalledWith(expect.arrayContaining(['-shortest']));
+  expect(mockFfmpeg.outputOptions).toHaveBeenCalledWith(expect.arrayContaining(['-map', '0:a?']));
+  expect(mockFfmpeg.outputOptions).toHaveBeenCalledWith(expect.arrayContaining(['-map', '2:a?'])); // Assuming bgmInputIndex is 2 in this test case
 
     // Check save was called
     expect(mockFfmpeg.save).toHaveBeenCalledWith(expect.stringMatching(/\/tmp\/videos\/video-\d+\.mp4/));
@@ -104,11 +110,16 @@ describe('generateVideo', () => {
     expect(mockFfmpeg.input).toHaveBeenCalledWith(sourceUrl);
     expect(mockFfmpeg.input).not.toHaveBeenCalledWith('/path/to/screenshot.png');
 
-    // Check complex filter
+  // Check complex filter (updated: test/preview uses scale+pad pipeline to honor scale and position)
     expect(mockFfmpeg.complexFilter).toHaveBeenCalledWith(
-        expect.stringContaining(`[0:v]scale=1080:1920,format=yuv420p[base_with_overlay]`) &&
-        expect.not.stringContaining('[bg][fg]overlay') // Should not contain overlay logic
+      expect.stringContaining("[0:v]scale=w='min(iw*0.8,1080)':h='min(ih*0.8,1920)':force_original_aspect_ratio=decrease[fg]") &&
+      expect.stringContaining('[fg]pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=black,format=yuv420p[scaled]')
     );
+
+  // Should NOT force duration (-t) for source videos by default
+  const calls = mockFfmpeg.outputOptions.mock.calls as string[][];
+  const joined = calls.map(args => args.join(' ')).join(' ');
+  expect(joined).not.toContain('-t ');
   });
 
   it('should reject if ffmpeg encounters an error', async () => {

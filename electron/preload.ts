@@ -8,7 +8,8 @@ const electronAPI = {
   openFileDialog: () => ipcRenderer.invoke('open-file-dialog'),
   startMonitoring: () => ipcRenderer.invoke('start-monitoring'),
   stopMonitoring: () => ipcRenderer.invoke('stop-monitoring'),
-  getStatus: () => ipcRenderer.invoke('get-status'),
+  // 旧 'get-status' は詳細オブジェクトを返すため、フロント型に合わせた簡易エイリアスを使用
+  getStatus: () => ipcRenderer.invoke('get-status-simple'),
   onLogMessage: (callback: (message: string) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, message: unknown) => {
       callback(String(message));

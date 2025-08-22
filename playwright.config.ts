@@ -1,40 +1,44 @@
 import { defineConfig, devices } from '@playwright/test';
+import path from 'path';
 
 export default defineConfig({
-  testDir: './src/tests',
-  timeout: 60000, // Increased timeout for web server start
+  testDir: './', // プロジェクトルートからテストを探す
+  timeout: 60000,
   retries: 1,
-
-  // Opt out of parallel tests because they conflict with a single server instance.
   workers: 1,
 
-  webServer: {
-    command: 'npm run dev',
-  url: 'http://127.0.0.1:5173',
-    reuseExistingServer: !process.env.CI,
-    timeout: 120 * 1000, // 2 minutes to start
-    stdout: 'pipe',
-    stderr: 'pipe',
-  },
+  // webServerはElectronアプリを直接起動するため不要
+  // webServer: {
+  //   command: 'npm run dev',
+  //   url: 'http://127.0.0.1:5173',
+  //   reuseExistingServer: !process.env.CI,
+  //   timeout: 120 * 1000,
+  //   stdout: 'pipe',
+  //   stderr: 'pipe',
+  // },
 
   use: {
     headless: true,
     viewport: { width: 1280, height: 800 },
     ignoreHTTPSErrors: true,
-    video: 'on-first-retry', // Changed to reduce noise, only record video on retry
-  baseURL: 'http://127.0.0.1:5173', // Set base URL to Vite dev server
+    video: 'on-first-retry',
   },
 
   projects: [
     {
-      name: 'Chromium',
-      use: { ...devices['Desktop Chrome'] },
+      name: 'Web', // 既存のWebアプリテスト用
+      testDir: './src/tests',
+      use: { ...devices['Desktop Chrome'], baseURL: 'http://127.0.0.1:5173' },
     },
-    // Electron project is disabled for now as it requires more complex setup
-    // to launch the electron app directly. Testing against chromium is sufficient.
-    // {
-    //   name: 'Electron',
-    //   use: { ...devices['Desktop Chrome'] },
-    // },
+    {
+      name: 'Electron', // Electronアプリテスト用
+      testDir: './electron/tests', // Electronテストはelectron/testsに配置
+      testMatch: /.*\.e2e\.test\.ts/, // E2Eテストのみを対象
+      use: {
+        // Electronアプリの起動はテストファイル内で _electron.launch() を使う
+        // ここではダミーのデバイス設定
+        ...devices['Desktop Chrome'],
+      },
+    },
   ],
 });
