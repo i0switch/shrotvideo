@@ -1,0 +1,31 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "CommonJS",
+    "moduleResolution": "node",
+    "outDir": "dist/electron",
+    "strict": false,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "rootDir": ".",
+    "baseUrl": ".",
+  "types": ["node"],
+    "paths": {
+      "@electron/*": ["electron/*"]
+    }
+  },
+  "ts-node": {
+    "esm": true
+  },
+  "include": [
+  "electron/**/*.ts",
+  "electron/**/*.d.ts",
+    "src/core/settings.ts"
+  ],
+  "exclude": [
+  "electron/tools/**",
+  "electron/tests/**",
+  "electron/tasks/x-playwright.ts"
+  ]
+}

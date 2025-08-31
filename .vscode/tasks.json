@@ -1,0 +1,112 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Build Project",
+			"type": "shell",
+			"command": "npm run build",
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "Build Project",
+			"type": "shell",
+			"command": "npm run build",
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "Build Project",
+			"type": "shell",
+			"command": "npm run build",
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "Build Project",
+			"type": "shell",
+			"command": "npm run build",
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "Run Test AutoRun",
+			"type": "shell",
+			"command": "npm run test:autorun",
+			"isBackground": false,
+			"problemMatcher": [
+				"$eslint-stylish"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Build Electron (tsc)",
+			"type": "shell",
+			"command": "npm run build:electron",
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "Build Project",
+			"type": "shell",
+			"command": "npm run build",
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "Run Test AutoRun (env)",
+			"type": "shell",
+			"command": "npm run test:autorun",
+			"isBackground": false,
+			"problemMatcher": [
+				"$tsc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Run Test AutoRun (env)",
+			"type": "shell",
+			"command": "npm run test:autorun",
+			"isBackground": false,
+			"problemMatcher": [
+				"$tsc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Run Test AutoRun (awaited pw)",
+			"type": "shell",
+			"command": "npm run test:autorun",
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "Run Test AutoRun (after pw install)",
+			"type": "shell",
+			"command": "npm run test:autorun",
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "Build Electron (tsc)",
+			"type": "shell",
+			"command": "npm run build:electron",
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "Run autorun once (prod)",
+			"type": "shell",
+			"command": "$env:RUN_TEST_ON_START='1'; $env:RUN_TEST_EXIT='1'; npm run start:prod",
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "Run autorun once (prod) - after X fallback",
+			"type": "shell",
+			"command": "$env:RUN_TEST_ON_START='1'; $env:RUN_TEST_EXIT='1'; npm run start:prod",
+			"isBackground": false,
+			"group": "build"
+		}
+	]
+}

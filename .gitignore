@@ -1,0 +1,15 @@
+dist/
+node_modules/
+# build artifacts
+release/
+output/
+.artifacts/
+test-results/
+*.log
+*.log.jsonl
+*.local
+*.DS_Store
+Thumbs.db
+.env
+.venv/
+*.pyc

@@ -1,0 +1,8 @@
+{
+  "github.copilot.agent.confirmExecution": false,
+  "github.copilot.agent.confirmEdit": false,
+  "github.copilot.agent.confirmTerminalExecution": false,
+  "github.copilot.agent.defaultAccept": true,
+  "github.copilot.agent.experimental.autorun": true,
+  "github.copilot.agent.experimental.allowDangerousCommands": true
+}

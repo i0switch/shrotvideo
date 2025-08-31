@@ -1,0 +1,23 @@
+{
+  "nodes": [
+    "electron/tasks/video-generator.ts",
+    "electron/tasks/downloader.ts",
+    "electron/tasks/scraper.ts",
+    "electron/tools/generate-from-urls.ts",
+    "src/core/settings.ts"
+  ],
+  "edges": [
+    [
+      "electron/tools/generate-from-urls.ts",
+      "electron/tasks/video-generator.ts"
+    ],
+    [
+      "electron/tasks/downloader.ts",
+      "electron/tasks/scraper.ts"
+    ],
+    [
+      "electron/tasks/video-generator.ts",
+      "src/core/settings.ts"
+    ]
+  ]
+}

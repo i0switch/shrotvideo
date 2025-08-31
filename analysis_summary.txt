@@ -1,0 +1,86 @@
+SNS動画自動生成ツール 分析サマリー（フェーズ1）
+
+1. リポジトリ全体構成（主要）
+- Electron + Vite + React + TypeScript デスクトップアプリ
+  - electron/: メインプロセス、ジョブ管理、タスク（スクレイプ/ダウンロード/生成）
+  - src/: レンダラ（UI）
+  - scripts/: ビルド/検証ユーティリティ
+  - release/: electron-builder 生成物
+  - backend/, python_backend/: 任意のPython補助（現状は主経路では不使用）
+  - test-results/, output/: 実行結果と成果物
+
+2. 主要依存関係
+- メディア: fluent-ffmpeg, ffmpeg-static
+- ダウンロード: ytdlp-nodejs (yt-dlp バイナリ同梱), child_process 経由でCLI呼び出し
+- デスクトップ: electron 37, electron-builder, electron-log, electron-store, keytar
+- 非同期/制御: p-queue, p-retry
+- UI: React 18, Tailwind, shadcn
+- Dev: vite, vitest, playwright, concurrently, cross-env, wait-on
+
+3. モジュール役割
+- electron/main.ts
+  - アプリ初期化、ウィンドウ作成、IPC登録、診断ログ、オートテスト/オートプレビュー
+- electron/job-manager.ts
+  - 監視ジョブのスケジュール/実行、バックフィル、重複抑止、runTestOnceAll(runTestLatestNAll)
+- electron/tasks/scraper.ts
+  - Xのオフスクリーン描画→スクショ、YouTube/TikTokのyt-dlp JSON解析、Cookieファイル生成、再生可否判定
+- electron/tasks/downloader.ts
+  - yt-dlp CLIでの動画DL（svtool-%(id)s-%(epoch)s.%(ext)s）、ffprobe検証、asar.unpackedへのパス解決
+- electron/tasks/video-generator.ts
+  - ffmpegフィルタ構成（背景cover, overlayスケール, drawtext box付き, tpad/-tでduration制御, apad）
+- electron/login.ts, dialogs.ts ほか
+  - 認証・ファイルダイアログ・IPC補助
+
+4. データフロー（SNS投稿の取得→解析→動画生成→出力）
+- 取得
+  - listRecentItems(platform, accountId, limit, sinceCursor)
+    - X: scrapeX() により最新記事の要素領域を計算→スクショ（type: screenshot）
+    - TikTok/YouTube: yt-dlp -J によるフィードJSON→最新アイテムのURL抽出（type: video_url）
+- 解析
+  - YouTube Shorts再生可否判定（<=61s, availability, URLパターン）
+  - Cookie（keytar保存→Netscape形式一時ファイル）を必要に応じて付与
+- 生成
+  - screenshot: generateVideo(screenshotPath, settings)
+  - video_url: downloadVideoToTemp(url)→generateVideo('', settings, localPath)
+  - generateVideoは：
+    - 背景: coverスケール+クロップ
+    - オーバーレイ: scale値（1=全画面, 0.9=0.9倍）と位置
+    - テロップ: drawtext + box=1 + boxcolorで背景描画、透明度可
+    - duration: FORCE_RENDER_DURATION=1 または forceDuration=true で設定秒数を厳守（tpad/-t/apad）
+- 出力
+  - settings.general.outputPath へ mp4 を保存（UIから変更可）
+  - オートテスト時は test-results/auto-run-<ts>/ に summary.json と app.log.jsonl を保存
+
+5. フローの呼び出し元
+- GUIの「テスト生成」相当: ipcMain('jobs.testProcessAllOnce') → JobManager.runTestOnceAll()（各アカウント最新3件）
+- 自動起動テスト: RUN_TEST_ON_START=1 で同処理を起動時に実行（本コミットで3秒強制/アカウント自動投入も追加）
+
+6. エラーハンドリング/再試行
+- p-retryで3回、タスク全体に15分タイムアウト
+- X生成失敗時はスクレイプ取り直しで最終リトライ
+- ジョブ連続10回失敗で当該プラットフォーム停止
+
+7. 既知の制約と対策
+- yt-dlp/ffmpegバイナリは asarUnpack され、実行時に app.asar.unpacked を解決
+- OneDrive配下のロック/EBUSYに配慮しつつ、npxキャッシュ問題はローカルbin利用で回避可能
+- 再生制限や認証が必要な場合は keytar 経由でCookie注入を行う
+
+-- EOF --
+
+追記（フェーズ1更新・実装メモ）
+
+- Xスクリーンショット用バックエンドの利用確認:
+  - electron/tasks/scraper.ts の runScreenshotGrab()/listRecentItemsX_viaBackend() で screenshot/bin/grab.cjs を経由し、Playwright ベースのサブアプリを起動して画像を保存。
+  - electron/main.ts の自動キャプチャ（CAPTURE_X_SCREENSHOTS=1）ルートも Playwright を直接呼び出し、出力は screenshot/out/screenshots/<account>/ 以下に集約。
+
+- 重要なパス修正（Windows 固有）:
+  - SCREENSHOT_ROOT の絶対パスが一部箇所でドライブレターのコロンが欠落していました。
+  - 修正ファイル: electron/main.ts, electron/tasks/scraper.ts
+  - いずれも 'C:\\Users\\i0swi\\OneDrive\\デスクトップ\\dougadownload\\screenshot' に統一。
+
+- フェーズ2準備状況:
+  - JobManager.runTestOnceAll() は最新3件×各プラットフォームに対応。RUN_TEST_ON_START=1 で起動時に自動実行され、durationSec=3 と出力先 test-results/auto-run-<ts>/ を強制設定。
+  - video-generator は FORCE_RENDER_DURATION=1 下で設定秒数（3s）を厳守し、drawtext フォントは Windows 既定フォント自動検出により描画可能。
+  - 必要に応じて screenshot/.auth/x.storage.json を用意（Xログイン状態）。
+
+この更新により、パス不整合による X 画像の探索失敗を回避し、フェーズ2（9本の3秒動画生成）の実施準備が整いました。

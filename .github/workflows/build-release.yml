@@ -1,0 +1,62 @@
+name: Build Desktop Apps (Win & Mac)
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches:
+      - 2025.08.27
+
+jobs:
+  build:
+    name: Build ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: win
+          - os: macos-latest
+            target: mac
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Build renderer
+        run: npm run build:renderer
+
+      - name: Build electron (tsc)
+        run: npm run build:electron
+
+      - name: Build app (electron-builder)
+        env:
+          # Disable code signing by default so unsigned builds are produced
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+          CSC_FOR_PULL_REQUEST: true
+          # Prevent mac signing when no certs are configured
+          ELECTRON_SKIP_NOTARIZE: true
+        run: |
+          if [ "${{ matrix.target }}" = "mac" ]; then
+            npx electron-builder --mac
+          else
+            npx electron-builder --win
+          fi
+        shell: bash
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: |
+            release/**
+          retention-days: 7
