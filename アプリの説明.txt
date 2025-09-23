@@ -1,44 +1,69 @@
-このアプリケーションは「ShortVideo-Genius」という名称のデスクトップツールです。主な目的は、設定したSNSアカウントを監視し、その内容から自動でショート動画を生成・変換して保存することです。
+ShortVideo-Genius : アプリ説明 (内部仕様向け)
+=================================================
 
-主な機能
-このアプリには、大きく分けて2つの主要な機能があります。
+このアプリは X / TikTok / YouTube の指定アカウントを監視し、新着コンテンツを短尺動画として収集・再生成する自動化デスクトップツールです。単純なダウンローダではなく、スクリーンショット合成 / direct capture / ffmpeg による再編集を統合しています。
 
-XアカウントのRTから動画を自動生成
+1. コア機能
+---------------------------------
+* X リポスト/投稿監視
+	* 単一動画ツイート: direct capture で mp4 を取得
+	* 静止系: スクショ複数枚 + 背景動画 → 合成生成
+* YouTube Shorts 監視: yt-dlp で playable 判定後保存 (≤ 約61秒)
+* TikTok 短尺監視: 新着動画 URL 抽出 → 取得
+* ffmpeg による縦長化 / BGM / テロップ / クロッピング
+* テストラン (runTestOnceAll) で統計 & 品質イベント出力
 
-設定したXアカウントがRT（リポスト）した投稿をスクリーンショットで取得し、それを背景動画と合成して自動でショート動画を生成・保存します。
+2. アーキテクチャ概要
+---------------------------------
+Electron(Main) → JobManager → Scraper/Downloader → VideoGenerator → Structured Logger
 
-監視対象となるXアカウントは複数指定できます。
+* JobManager: 並列制御(PQueue) / 直近処理重複ガード / テスト統計
+* Scraper: アカウントページ列挙 + strict mp4 対応
+* Downloader: yt-dlp / fetch 経由の一時保存
+* VideoGenerator: 入力メタ + スクショ → ffmpeg フィルタ構築
+* Logger: JSONL (イベント) + サマリ + テストラン成果物
 
-ショート動画の転載変換
+3. 設定 (electron-store)
+---------------------------------
+保存場所: ユーザーデータディレクトリ (`app.getPath('userData')`)
+主要キー:
+	general.outputPath / testOutputPath / diagnosticLogging / interval
+	platforms.x|tiktok|youtube: enabled / accounts[] / intervalMinutes / scrapeDelayMs
 
-TikTok、YouTubeのショート動画アカウントの内容を監視し、転載に適した形式の動画として自動で保存します。
+4. テストラン統計フィールド
+---------------------------------
+timeouts, skips, directCaptureAttempts, directCaptureSuccesses, xVideoUrlItems
+品質イベント: test-run:quality-warning / test-run:quality-degradation
 
-各プラットフォームで監視対象のアカウントを複数指定可能です。
+5. 生成動画パイプライン
+---------------------------------
+1) スクレイプ結果 (video_url / screenshot)
+2) direct capture なら mp4 そのまま整形 (必要に応じトランスコード)
+3) スクショ列なら: レイアウト (中心/背景) + fps + オーディオ合成
+4) 出力: <outputPath>/YYYYMMDD_xxx.mp4 など (命名ルール拡張余地)
 
-カスタマイズ可能な設定項目
-ユーザーは、生成する動画の仕様や監視方法を細かく設定できます。
+6. セキュリティ
+---------------------------------
+* Cookie は keytar 経由で OS セキュアストア保存
+* 一時 Netscape cookie ファイルは tmp に生成し都度破棄
+* ログには認証トークン/クッキーバリューを出さない方針
 
-監視アカウント設定:
+7. 主な環境変数
+---------------------------------
+RUN_TEST_ON_START / RUN_TEST_EXIT / RUN_TEST_N
+RUN_TEST_TIMEOUT_MS / RUN_TEST_ENUM_TIMEOUT_MS / RUN_TEST_PROC_TIMEOUT_MS
+CAPTURE_X_SCREENSHOTS / CAPTURE_X_ACCOUNT / CAPTURE_X_LIMIT / CAPTURE_OUT_BASE / CAPTURE_EXIT
 
-監視対象: X、TikTok、YouTubeのユーザーアカウントを複数指定できます。
+8. 今後の改善候補
+---------------------------------
+* ハッシュ重複検出
+* プレビュー生成 (サムネ + メタ JSON)
+* 動画品質スコア / 再試行ポリシー
+* OCR + 自動字幕生成
 
-監視間隔: 各プラットフォームの監視間隔を分単位で設定できます。
+9. 注意事項
+---------------------------------
+* プラットフォーム利用規約に抵触しない用途で使用すること
+* 大量リクエストを避けるため scrapeDelayMs を適切に設定
 
-ログイン: 監視のためにX、YouTube、TikTokのアカウントにログインする機能があります。
-
-動画出力設定:
-
-解像度: 生成する動画の幅（Width）と高さ（Height）を指定できます。
-
-動画の長さ: 動画の長さを秒単位で設定できます。
-
-BGM: 任意のBGMファイルを動画に追加できます。
-
-背景動画: 任意の動画を背景として設定できます。
-
-テロップ: 動画の上部と下部に任意のテキストテロップを挿入できます。
-
-ユーザーインターフェース
-ダッシュボード: 各機能の監視状況（監視対象、間隔、出力設定など）を一覧で確認し、「監視を開始」ボタンで操作できます。
-
-動作状況ログ: アプリケーションの動作状況がリアルタイムで表示されるログ機能があり、問題の把握に役立ちます。
+以上
