@@ -1,15 +1,52 @@
 dist/
 node_modules/
-# build artifacts
+
+# Build / packaging artifacts
 release/
+release2/
+release3/
+release_build/
 output/
 .artifacts/
+artifacts/
+out/
+logs/
+quality-test/
 test-results/
+test-output/
+test-output-v2/
+
+# Screenshot subproject & its outputs (keep sources out unless reintroduced deliberately)
+screenshot/node_modules/
+screenshot/out/
+screenshot/test-results/
+screenshot/playwright-report/
+
+# Generated media & run outputs
+**/xshot-*.mp4
+**/xshot-*.png
+**/xshot-*.json
+**/gen-*-*.mp4
+**/summary-events.jsonl
+**/structured-events.jsonl
+**/test-run-*.events.jsonl
+**/test-run-*.json
+
+# Logs
 *.log
 *.log.jsonl
+
+# Misc local
 *.local
 *.DS_Store
 Thumbs.db
 .env
+.env.*
 .venv/
+__pycache__/
 *.pyc
+
+# Large media accidentally dropped at root
+*.mp4
+*.png
+*.zip
