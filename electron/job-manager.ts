@@ -6,6 +6,8 @@ import type { AppSettings, Platform, Account } from '../src/core/settings';
 import { scrapeAccount, ScrapeResult, listRecentItems } from './tasks/scraper';
 import { generateVideo } from './tasks/video-generator';
 import { downloadVideoToTemp } from './tasks/downloader';
+import { captureTweetScreenshotAndBox, overlayVideoOnScreenshot } from './tasks/x-composer';
+import path from 'node:path';
 import fs from 'node:fs/promises';
 
 type JobStatus = 'idle' | 'running' | 'stopped';
@@ -466,8 +468,26 @@ export class JobManager {
         try {
           log.info(`[${platform}:${accountId}] Trying tweet video download first: ${item.url}`);
           const dl = await downloadVideoToTemp(item.url, platform);
-          videoPath = await generateVideo('', (this.store as unknown as { store: AppSettings }).store, dl.filepath, { accountId: { platform, id: accountId }, sourceType: 'x_tweet_video' });
-          log.info(`[${platform}:${accountId}] Used tweet video as source (like YouTube/TikTok).`);
+
+          // 追加: captureappの仕様に合わせて、スクショ上の動画領域にはめ込む合成を試行
+          // 1) 記事スクショと相対座標を取得
+          const shotOut = path.join((this.store as unknown as { store: AppSettings }).store.general.outputPath || process.cwd(), 'x-composed');
+          const cap = await captureTweetScreenshotAndBox(item.url, shotOut);
+          if (cap && cap.relBox && cap.classification === 'single_video') {
+            const composed = await overlayVideoOnScreenshot({
+              screenshotPath: cap.screenshotPath,
+              videoPath: dl.filepath,
+              box: cap.relBox,
+              outputDir: shotOut,
+              fileName: `x-compose-${accountId}-${cap.tweetId || item.id}-${Date.now()}.mp4`,
+            });
+            videoPath = composed;
+            log.info(`[${platform}:${accountId}] Composited tweet video onto screenshot region.`);
+          } else {
+            // 合成条件が満たせない場合は従来の縦動画生成にフォールバック
+            videoPath = await generateVideo('', (this.store as unknown as { store: AppSettings }).store, dl.filepath, { accountId: { platform, id: accountId }, sourceType: 'x_tweet_video' });
+            log.info(`[${platform}:${accountId}] Used tweet video as source (fallback vertical compose).`);
+          }
           // 成功したのでスクショ合成ルートはスキップ
         } catch (e) {
           log.warn(`[${platform}:${accountId}] Tweet video download not available; falling back to screenshot. Reason: ${(e as Error)?.message || String(e)}`);
