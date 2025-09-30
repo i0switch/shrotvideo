@@ -9,8 +9,13 @@ test-results/
 screenshot/playwright-report/
 screenshot/out/
 ## captureapp の実行時生成物
+captureapp/dist/
+captureapp/release/
+captureapp/test-results/
 captureapp/logs/
 captureapp/outputs/
+# 誤って二重に配置されたネスト済みワークスペース
+shrotvideo/
 *.log
 *.log.jsonl
 *.local
