@@ -461,37 +461,52 @@ export class JobManager {
     let videoPath = '';
     try {
     if (item.type === 'screenshot') {
-      if (!item.path) {
-        // 互換: 以前の1件スクレイプフローにフォールバック
-        const scrapeResult = await scrapeAccount(platform, accountId, (this.store as unknown as { store: AppSettings }).store);
-        if (!scrapeResult) throw new Error('Scraping did not return a result.');
-        if (scrapeResult.type !== 'screenshot') throw new Error('Expected screenshot item.');
-  const shotPath = scrapeResult.path;
-  videoPath = await generateVideo(shotPath, (this.store as unknown as { store: AppSettings }).store);
-      } else {
-        // スクリーンショットが存在しない/サイズ0の場合は再取得して補完
-        let shot = item.path;
-        let needRefetch = false;
+      // X のスクショ項目に URL が付与されている場合、まず動画ダウンロードを試行（動画付きポストならこちらを優先）
+      if (platform === 'x' && item.url) {
         try {
-          const st = await fs.stat(shot);
-          if (!st.isFile() || st.size <= 0) needRefetch = true;
-        } catch { needRefetch = true; }
-        if (needRefetch) {
-          log.warn(`[${platform}:${accountId}] Screenshot missing/empty. Refetching via scrapeAccount...`);
-          const sr = await scrapeAccount(platform, accountId, (this.store as unknown as { store: AppSettings }).store);
-          if (sr && sr.type === 'screenshot') {
-            shot = sr.path;
-          } else {
-            throw new Error('Failed to refetch screenshot');
-          }
+          log.info(`[${platform}:${accountId}] Trying tweet video download first: ${item.url}`);
+          const dl = await downloadVideoToTemp(item.url, platform);
+          videoPath = await generateVideo('', (this.store as unknown as { store: AppSettings }).store, dl.filepath, { accountId: { platform, id: accountId }, sourceType: 'x_tweet_video' });
+          log.info(`[${platform}:${accountId}] Used tweet video as source (like YouTube/TikTok).`);
+          // 成功したのでスクショ合成ルートはスキップ
+        } catch (e) {
+          log.warn(`[${platform}:${accountId}] Tweet video download not available; falling back to screenshot. Reason: ${(e as Error)?.message || String(e)}`);
         }
-  videoPath = await generateVideo(shot, (this.store as unknown as { store: AppSettings }).store);
+      }
+      // まだ videoPath が未決定なら、従来通りスクショ合成へ
+      if (!videoPath) {
+        if (!item.path) {
+          // 互換: 以前の1件スクレイプフローにフォールバック
+          const scrapeResult = await scrapeAccount(platform, accountId, (this.store as unknown as { store: AppSettings }).store);
+          if (!scrapeResult) throw new Error('Scraping did not return a result.');
+          if (scrapeResult.type !== 'screenshot') throw new Error('Expected screenshot item.');
+          const shotPath = scrapeResult.path;
+          videoPath = await generateVideo(shotPath, (this.store as unknown as { store: AppSettings }).store, undefined, { accountId: { platform, id: accountId } });
+        } else {
+          // スクリーンショットが存在しない/サイズ0の場合は再取得して補完
+          let shot = item.path;
+          let needRefetch = false;
+          try {
+            const st = await fs.stat(shot);
+            if (!st.isFile() || st.size <= 0) needRefetch = true;
+          } catch { needRefetch = true; }
+          if (needRefetch) {
+            log.warn(`[${platform}:${accountId}] Screenshot missing/empty. Refetching via scrapeAccount...`);
+            const sr = await scrapeAccount(platform, accountId, (this.store as unknown as { store: AppSettings }).store);
+            if (sr && sr.type === 'screenshot') {
+              shot = sr.path;
+            } else {
+              throw new Error('Failed to refetch screenshot');
+            }
+          }
+          videoPath = await generateVideo(shot, (this.store as unknown as { store: AppSettings }).store, undefined, { accountId: { platform, id: accountId }, sourceType: 'screenshot' });
+        }
       }
     } else if (item.type === 'video_url') {
       const url = item.url || '';
       // First download the video to a local temp file, then feed to ffmpeg
-      const dl = await downloadVideoToTemp(url, platform);
-      videoPath = await generateVideo('', (this.store as unknown as { store: AppSettings }).store, dl.filepath);
+    const dl = await downloadVideoToTemp(url, platform);
+  videoPath = await generateVideo('', (this.store as unknown as { store: AppSettings }).store, dl.filepath, { accountId: { platform, id: accountId }, sourceType: platform === 'youtube' ? 'youtube' : (platform === 'tiktok' ? 'tiktok' : 'other') });
     } else {
       throw new Error(`Unknown item type: ${item.type}`);
     }
@@ -506,7 +521,7 @@ export class JobManager {
           log.warn(`[${platform}:${accountId}] Video generation failed. Retrying once with fresh screenshot... Reason: ${err.message || String(err)}`);
           const sr = await scrapeAccount(platform, accountId, (this.store as unknown as { store: AppSettings }).store);
           if (!sr || sr.type !== 'screenshot') throw err;
-          videoPath = await generateVideo(sr.path, (this.store as unknown as { store: AppSettings }).store);
+          videoPath = await generateVideo(sr.path, (this.store as unknown as { store: AppSettings }).store, undefined, { accountId: { platform, id: accountId }, sourceType: 'screenshot' });
           log.info(`[${platform}:${accountId}] Video generation successful after retry: ${videoPath}`);
           this.markRecentlyProcessed(platform, accountId, item.id);
           return;

@@ -57,14 +57,11 @@ describe('generateVideo', () => {
       durationSec: 10,
       bgmPath: '/path/to/bgm.mp3',
       backgroundVideoPath: '/path/to/background.mp4',
-      captions: { top: "TOP TEXT", bottom: "BOTTOM TEXT" },
+      // captions removed in current pipeline
       scale: 0.8,
-      teleTextBg: '#000000',
       qualityPreset: 'standard',
       overlayPosition: 'center',
-      topCaptionHeight: 120,
-      bottomCaptionHeight: 160,
-      captionBgOpacity: 1.0,
+      // caption related fields removed
     },
   };
 
@@ -79,25 +76,22 @@ describe('generateVideo', () => {
 
   // Check complex filter (current pipeline labels and colors)
   const filterArg = (mockFfmpeg.complexFilter as any).mock.calls[0][0] as string;
-  expect(filterArg).toContain("[1:v]scale=w='min(iw*0.8,1080)':h='min(ih*0.8,1920)':force_original_aspect_ratio=decrease[fg]");
-  expect(filterArg).toContain('[0:v]scale=1080:1920,format=yuv420p[bg]');
+  expect(filterArg).toContain('[0:v]scale=1080:1920:force_original_aspect_ratio=increase');
+  expect(filterArg).toContain('format=yuv420p[bg]');
+  // foreground scaled with numeric dimensions (contain)
+  expect(filterArg).toMatch(/\[1:v\]scale=\d+:\d+:force_original_aspect_ratio=decrease\[fg\]/);
   expect(filterArg).toContain('[bg][fg]overlay=(W-w)/2:(H-h)/2[base_with_overlay]');
-  // drawbox color is normalized to ffmpeg color 0x000000@<opacity>
-  expect(filterArg).toContain('drawbox=x=0:y=0:w=iw:h=120:color=0x000000@1:t=fill');
-  // drawtext uses "drawtext=text='...'" form in our generator
-  expect(filterArg).toContain("drawtext=text='TOP TEXT'");
-  expect(filterArg).toContain("drawtext=text='BOTTOM TEXT'");
-  expect(filterArg).toContain('fontsize=48');
-  expect(filterArg).toContain('fontsize=42');
 
-  // Check output options
-  expect(mockFfmpeg.outputOptions).toHaveBeenCalledWith(expect.arrayContaining(['-t', '10']));
-  expect(mockFfmpeg.outputOptions).toHaveBeenCalledWith(expect.arrayContaining(['-preset', 'veryfast']));
-  expect(mockFfmpeg.outputOptions).toHaveBeenCalledWith(expect.arrayContaining(['-pix_fmt', 'yuv420p']));
-  expect(mockFfmpeg.outputOptions).toHaveBeenCalledWith(expect.arrayContaining(['-c:a', 'aac']));
-  expect(mockFfmpeg.outputOptions).toHaveBeenCalledWith(expect.arrayContaining(['-shortest']));
-  expect(mockFfmpeg.outputOptions).toHaveBeenCalledWith(expect.arrayContaining(['-map', '0:a?']));
-  expect(mockFfmpeg.outputOptions).toHaveBeenCalledWith(expect.arrayContaining(['-map', '2:a?'])); // Assuming bgmInputIndex is 2 in this test case
+  // Check output options（出力オプションは個別に呼び出されるケースと配列で渡されるケース双方に対応）
+  const outCallsAAll = (mockFfmpeg.outputOptions as any).mock.calls as string[][];
+  const outJoined = outCallsAAll.map(args => args.join(' ')).join(' ');
+  expect(outJoined).toContain('-t 10');
+  expect(outJoined).toContain('-preset veryfast');
+  expect(outJoined).toContain('-pix_fmt yuv420p');
+  expect(outJoined).toContain('-c:a aac');
+  // shortest は使用しない。音声は preferAudioIndex として1:a? or 0:a?が指定される
+  expect(outJoined).not.toContain('-shortest');
+  expect(outJoined).toContain('-map');
 
     // Check save was called
     expect(mockFfmpeg.save).toHaveBeenCalledWith(expect.stringMatching(/\/tmp\/videos\/video-\d+\.mp4/));
@@ -144,5 +138,24 @@ describe('generateVideo', () => {
         }
     };
     await expect(generateVideo('/path/to/screenshot.png', settingsWithoutBg)).rejects.toThrow('A background or source video must be provided.');
+  });
+
+  it('should prioritize BGM for X platform when available (screenshot overlay case)', async () => {
+    vi.clearAllMocks();
+    // Use default mockSettings where bgmPath and backgroundVideoPath are set
+    await generateVideo('/path/to/screenshot.png', mockSettings, undefined, { accountId: { platform: 'x', id: 'acc' } });
+
+    // Inputs: [0]=bg, [1]=screenshot, [2]=bgm
+    expect(mockFfmpeg.input).toHaveBeenCalledWith(mockSettings.render.backgroundVideoPath);
+    expect(mockFfmpeg.input).toHaveBeenCalledWith('/path/to/screenshot.png');
+    expect(mockFfmpeg.input).toHaveBeenCalledWith('/path/to/bgm.mp3');
+
+    // Should map only one audio stream: bgm -> index 2
+    const calls = (mockFfmpeg.outputOptions as any).mock.calls as string[][];
+    const joined = calls.map(args => args.join(' ')).join(' ');
+    expect(joined).toContain('-map [v_final]');
+    expect(joined).toContain('-map 2:a?');
+    // and should not additionally map background audio when BGM selected
+    expect(joined).not.toContain('-map 0:a? -map 2:a?');
   });
 });

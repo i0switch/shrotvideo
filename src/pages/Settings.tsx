@@ -9,7 +9,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "@/components/ui/use-toast";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import type { Platform, Account } from "@/core/settings";
+import type { Platform, Account, WatchedFolder } from "@/core/settings";
 import { Trash2 } from "lucide-react";
 import { useState, useEffect, useRef } from "react"; // Add useEffect
 import { Badge } from "@/components/ui/badge";
@@ -23,9 +23,7 @@ const Settings = () => {
     youtube: '',
   });
 
-  // ローカル編集用（テロップ高さ）
-  const [topHeightStr, setTopHeightStr] = useState<string>('');
-  const [bottomHeightStr, setBottomHeightStr] = useState<string>('');
+  // テロップ機能削除に伴いローカル編集状態は不要
 
   // テスト用動画パス（背景動画とは独立して管理）
   // フォールバックは実行時に settings.render.backgroundVideoPath を参照するため、
@@ -65,16 +63,14 @@ const Settings = () => {
   };
 
 
-  const handleSelectFile = async (key: 'bgmPath' | 'backgroundVideoPath' | 'fontFilePath') => {
+  const handleSelectFile = async (key: 'bgmPath' | 'backgroundVideoPath') => {
     try {
       const filters = key === 'bgmPath'
         ? [{ name: 'Audio', extensions: ['mp3','wav','aac','m4a'] }]
-        : key === 'backgroundVideoPath'
-        ? [{ name: 'Videos', extensions: ['mp4','mov','avi','mkv','webm'] }]
-        : [{ name: 'Fonts', extensions: ['ttf','ttc','otf'] }];
+        : [{ name: 'Videos', extensions: ['mp4','mov','avi','mkv','webm'] }];
       const result = (window.files && window.files.pickFile)
         ? await window.files.pickFile(key === 'bgmPath' ? 'bgm' : key === 'backgroundVideoPath' ? 'backgroundVideo' : 'fontFile', filters)
-        : await window.electronAPI.openFileDialog();
+  : await window.electronAPI.openFileDialog();
       if (result && settings) {
         updateSettings({ render: { ...settings.render, [key]: result } });
         toast({ title: "ファイルが選択されました", description: result });
@@ -114,6 +110,34 @@ const Settings = () => {
       updateSettings({ general: { ...settings.general, outputPath: result } });
       toast({ title: "出力先が更新されました", description: result });
     }
+  };
+
+  // Watched folders UI helpers
+  const addWatchedFolder = async () => {
+    const result = (window.files && window.files.pickFolder) ? await window.files.pickFolder('watchedFolder') : await window.electronAPI.openDirectoryDialog();
+    if (!result || !settings) return;
+    const exists = (settings.general.watchedFolders || []).some(f => f.path === result);
+    if (exists) {
+      toast({ title: '既に追加済み', description: result });
+      return;
+    }
+    const wf: WatchedFolder = { path: result, isActive: true, intervalMinutes: 5, chromaMode: 'none' };
+    updateSettings({ general: { ...settings.general, watchedFolders: [ ...(settings.general.watchedFolders || []), wf ] } });
+    toast({ title: '監視フォルダを追加しました', description: result });
+  };
+  const updateWatchedFolder = (idx: number, patch: Partial<WatchedFolder>) => {
+    if (!settings) return;
+    const list = [...(settings.general.watchedFolders || [])];
+    const next = { ...list[idx], ...patch } as WatchedFolder;
+    list[idx] = next;
+    updateSettings({ general: { ...settings.general, watchedFolders: list } });
+  };
+  const removeWatchedFolder = (idx: number) => {
+    if (!settings) return;
+    const list = [...(settings.general.watchedFolders || [])];
+    const removed = list.splice(idx, 1);
+    updateSettings({ general: { ...settings.general, watchedFolders: list } });
+    if (removed[0]) toast({ title: '監視フォルダを削除しました', description: removed[0].path });
   };
 
   const handleAccountChange = (platform: Platform, value: string) => {
@@ -197,12 +221,7 @@ const Settings = () => {
   }, []);
 
   // 設定の変化に追従して表示値を同期
-  useEffect(() => {
-    if (settings) {
-      setTopHeightStr(String(settings.render.topCaptionHeight ?? ''));
-      setBottomHeightStr(String(settings.render.bottomCaptionHeight ?? ''));
-    }
-  }, [settings?.render.topCaptionHeight, settings?.render.bottomCaptionHeight]);
+  // テロップ表示設定の同期は削除
 
 
   if (isLoading) {
@@ -276,10 +295,107 @@ const Settings = () => {
           </CardHeader>
           <CardContent className="space-y-4">
             {platformSettings.accounts.map((account) => (
-              <div key={account.id} className="flex items-center justify-between rounded-lg border p-3">
+              <div key={account.id} className="flex items-center justify-between rounded-lg border p-3 gap-3">
                 <div className="flex items-center gap-4">
-                   <Switch checked={account.isActive} onCheckedChange={() => toggleAccountActive(platform, account.id)} />
+                  <Switch checked={account.isActive} onCheckedChange={() => toggleAccountActive(platform, account.id)} />
                   <span className={!account.isActive ? 'text-muted-foreground' : ''}>{account.id}</span>
+                </div>
+                {/* アカウント単位のクロマキー設定（簡潔表示） */}
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-4">
+                  <div className="flex items-center gap-2">
+                    <Label className="text-xs">クロマキー</Label>
+                    <Select
+                      value={account.chromaMode || 'none'}
+                      onValueChange={(v: 'none'|'image'|'video') => {
+                        if (!settings) return;
+                        const updated = platformSettings.accounts.map(a => a.id === account.id ? { ...a, chromaMode: v } : a);
+                        updateSettings({ platforms: { ...settings.platforms, [platform]: { ...platformSettings, accounts: updated } } });
+                      }}
+                    >
+                      <SelectTrigger className="w-[160px]"><SelectValue placeholder="none" /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">なし</SelectItem>
+                        <SelectItem value="image">画像</SelectItem>
+                        <SelectItem value="video">動画</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  {/* 画像選択（パスは表示しない） */}
+                  {account.chromaMode === 'image' && (
+                    <div className="flex items-center gap-2">
+                      <Label className="text-xs">画像</Label>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={async () => {
+                          const filters = [{ name: 'Images', extensions: ['png','jpg','jpeg','webp'] }];
+                          const result = (window.files && window.files.pickFile)
+                            ? await window.files.pickFile('chromaImage', filters)
+                            : await window.electronAPI.openFileDialog();
+                          if (result && settings) {
+                            const updated = platformSettings.accounts.map(a => a.id === account.id ? { ...a, chromaImagePath: result } : a);
+                            updateSettings({ platforms: { ...settings.platforms, [platform]: { ...platformSettings, accounts: updated } } });
+                            toast({ title: '画像を選択しました' });
+                          }
+                        }}
+                      >選択</Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => {
+                          if (!settings) return;
+                          const updated = platformSettings.accounts.map(a => a.id === account.id ? { ...a, chromaImagePath: '' } : a);
+                          updateSettings({ platforms: { ...settings.platforms, [platform]: { ...platformSettings, accounts: updated } } });
+                          toast({ title: '画像指定をクリアしました' });
+                        }}
+                      >クリア</Button>
+                      {account.chromaImagePath ? (
+                        <Badge variant="default">設定済み</Badge>
+                      ) : (
+                        <Badge variant="secondary">未指定</Badge>
+                      )}
+                    </div>
+                  )}
+                  {/* 動画選択（パスは表示しない） */}
+                  {account.chromaMode === 'video' && (
+                    <div className="flex items-center gap-2">
+                      <Label className="text-xs">動画</Label>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={async () => {
+                          const filters = [{ name: 'Videos', extensions: ['mp4','mov','mkv','webm'] }];
+                          const result = (window.files && window.files.pickFile)
+                            ? await window.files.pickFile('chromaVideo', filters)
+                            : await window.electronAPI.openFileDialog();
+                          if (result && settings) {
+                            const updated = platformSettings.accounts.map(a => a.id === account.id ? { ...a, chromaVideoPath: result } : a);
+                            updateSettings({ platforms: { ...settings.platforms, [platform]: { ...platformSettings, accounts: updated } } });
+                            toast({ title: '動画を選択しました' });
+                          }
+                        }}
+                      >選択</Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => {
+                          if (!settings) return;
+                          const updated = platformSettings.accounts.map(a => a.id === account.id ? { ...a, chromaVideoPath: '' } : a);
+                          updateSettings({ platforms: { ...settings.platforms, [platform]: { ...platformSettings, accounts: updated } } });
+                          toast({ title: '動画指定をクリアしました' });
+                        }}
+                      >クリア</Button>
+                      {account.chromaVideoPath ? (
+                        <Badge variant="default">設定済み</Badge>
+                      ) : (
+                        <Badge variant="secondary">未指定</Badge>
+                      )}
+                    </div>
+                  )}
+                  {/* 注意書き */}
+                  {(account.chromaMode === 'image' && !account.chromaImagePath) || (account.chromaMode === 'video' && !account.chromaVideoPath) ? (
+                    <p className="text-xs text-muted-foreground">未指定の場合、クロマキー合成は行われません。</p>
+                  ) : null}
                 </div>
                 <Button variant="ghost" size="icon" onClick={() => removeAccount(platform, account.id)}>
                   <Trash2 className="h-4 w-4" />
@@ -413,30 +529,7 @@ const Settings = () => {
                   <Button variant="outline" onClick={() => handleSelectFile('backgroundVideoPath')}>選択</Button>
                 </div>
               </div>
-                <div className="space-y-2">
-                <Label>フォントファイル（任意）</Label>
-                <div className="flex gap-2">
-                  <Input value={settings?.render.fontFilePath || ''} readOnly placeholder=".ttf / .ttc / .otf" />
-                  <Button variant="outline" onClick={() => handleSelectFile('fontFilePath')}>選択</Button>
-                </div>
-                <p className="text-xs text-muted-foreground">指定すると日本語の文字化けを回避できます（例: Meiryo, Yu Gothic など）。</p>
-              </div>
-                <div className="space-y-2">
-                  <Label>上テロップ</Label>
-                  <CaptionInput
-                    placeholder="動画上部に表示されるテロップ"
-                    value={settings?.render.captions.top || ''}
-                    onChange={(text) => settings && updateSettings({ render: { ...settings.render, captions: { ...settings.render.captions, top: text } } })}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>下テロップ</Label>
-                  <CaptionInput
-                    placeholder="動画下部に表示されるテロップ"
-                    value={settings?.render.captions.bottom || ''}
-                    onChange={(text) => settings && updateSettings({ render: { ...settings.render, captions: { ...settings.render.captions, bottom: text } } })}
-                  />
-                </div>
+                {/* テロップ関連UIは削除 */}
                 <div className="space-y-2">
                 <Label>スケール</Label>
                 <Input
@@ -448,40 +541,7 @@ const Settings = () => {
                   onChange={(e) => settings && updateSettings({ render: { ...settings.render, scale: Number(e.target.value) } })}
                 />
               </div>
-                <div className="space-y-2">
-                  <Label>テロップ背景色</Label>
-                  <div className="flex items-center gap-3">
-                    <input
-                      type="color"
-                      value={settings?.render.teleTextBg || '#000000'}
-                      onChange={(e) => settings && updateSettings({ render: { ...settings.render, teleTextBg: e.target.value } })}
-                      aria-label="テロップ背景色を選択"
-                      className="h-9 w-12 rounded border"
-                    />
-                    <Input
-                      placeholder="#000000"
-                      value={settings?.render.teleTextBg || ''}
-                      onChange={(e) => settings && updateSettings({ render: { ...settings.render, teleTextBg: e.target.value } })}
-                    />
-                  </div>
-                </div>
-                <div className="space-y-2">
-                  <Label>テロップ文字色</Label>
-                  <div className="flex items-center gap-3">
-                    <input
-                      type="color"
-                      value={settings?.render.captionTextColor || '#ffffff'}
-                      onChange={(e) => settings && updateSettings({ render: { ...settings.render, captionTextColor: e.target.value } })}
-                      aria-label="テロップ文字色を選択"
-                      className="h-9 w-12 rounded border"
-                    />
-                    <Input
-                      placeholder="#ffffff"
-                      value={settings?.render.captionTextColor || ''}
-                      onChange={(e) => settings && updateSettings({ render: { ...settings.render, captionTextColor: e.target.value } })}
-                    />
-                  </div>
-                </div>
+                {/* テロップ色のUIは削除 */}
                 <div className="space-y-2">
                   <Label>オーバーレイ位置</Label>
                   <Select
@@ -499,107 +559,7 @@ const Settings = () => {
                     </SelectContent>
                   </Select>
                 </div>
-                <div className="space-y-2">
-                <Label>テロップ位置（上）</Label>
-                <Select
-                  value={settings?.render.topCaptionPosition ?? 'center'}
-                  onValueChange={(value: 'top'|'center'|'bottom') => settings && updateSettings({ render: { ...settings.render, topCaptionPosition: value } })}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="上テロップの位置" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="top">上寄せ</SelectItem>
-                    <SelectItem value="center">中央</SelectItem>
-                    <SelectItem value="bottom">下寄せ</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-2">
-                <Label>上テロップ微調整（px）</Label>
-                <Input
-                  type="number"
-                  step={1}
-                  value={settings?.render.topCaptionOffset ?? 0}
-                  onChange={(e) => settings && updateSettings({ render: { ...settings.render, topCaptionOffset: Number(e.target.value) || 0 } })}
-                />
-                <p className="text-xs text-muted-foreground">上ボックス内での上下オフセット（負で上/正で下）。</p>
-              </div>
-              <div className="space-y-2">
-                <Label>テロップ位置（下）</Label>
-                <Select
-                  value={settings?.render.bottomCaptionPosition ?? 'center'}
-                  onValueChange={(value: 'top'|'center'|'bottom') => settings && updateSettings({ render: { ...settings.render, bottomCaptionPosition: value } })}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="下テロップの位置" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="top">上寄せ</SelectItem>
-                    <SelectItem value="center">中央</SelectItem>
-                    <SelectItem value="bottom">下寄せ</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-2">
-                <Label>下テロップ微調整（px）</Label>
-                <Input
-                  type="number"
-                  step={1}
-                  value={settings?.render.bottomCaptionOffset ?? 0}
-                  onChange={(e) => settings && updateSettings({ render: { ...settings.render, bottomCaptionOffset: Number(e.target.value) || 0 } })}
-                />
-                <p className="text-xs text-muted-foreground">下ボックス内での上下オフセット（負で上/正で下）。</p>
-              </div>
-                <div className="space-y-2">
-                <Label>上テロップ背景の高さ</Label>
-                <Input
-                  type="number"
-                  min={0}
-                  step={1}
-                  value={topHeightStr}
-                  onChange={(e) => setTopHeightStr(e.target.value)}
-                  onBlur={() => {
-                    if (!settings) return;
-                    const n = Math.max(0, parseInt(topHeightStr || '0', 10) || 0);
-                    updateSettings({ render: { ...settings.render, topCaptionHeight: n } });
-                    setTopHeightStr(String(n));
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur();
-                  }}
-                />
-              </div>
-                <div className="space-y-2">
-                <Label>下テロップ背景の高さ</Label>
-                <Input
-                  type="number"
-                  min={0}
-                  step={1}
-                  value={bottomHeightStr}
-                  onChange={(e) => setBottomHeightStr(e.target.value)}
-                  onBlur={() => {
-                    if (!settings) return;
-                    const n = Math.max(0, parseInt(bottomHeightStr || '0', 10) || 0);
-                    updateSettings({ render: { ...settings.render, bottomCaptionHeight: n } });
-                    setBottomHeightStr(String(n));
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur();
-                  }}
-                />
-              </div>
-                <div className="space-y-2">
-                <Label>テロップ背景の透明度 (0.0 - 1.0)</Label>
-                <Input
-                  type="number"
-                  min={0.0}
-                  max={1.0}
-                  step={0.1}
-                  value={settings ? settings.render.captionBgOpacity : ''}
-                  onChange={(e) => settings && updateSettings({ render: { ...settings.render, captionBgOpacity: Number(e.target.value) } })}
-                />
-              </div>
+                {/* テロップの背景や位置調整UIはすべて撤去 */}
                 {/* More render settings can be added here */}
               </div>
               <div className="space-y-2 lg:sticky lg:top-4">
@@ -620,9 +580,7 @@ const Settings = () => {
               {/* 簡易ライブプレビュー（設定の概要） */}
               <div className="rounded-md border p-3 text-xs text-muted-foreground">
                 <div>プレビュー（概要）</div>
-                <div>上テロップ: {settings?.render.captions.top || '(なし)'} / 下テロップ: {settings?.render.captions.bottom || '(なし)'}</div>
                 <div>解像度: {settings?.render.resolution.width}x{settings?.render.resolution.height} / スケール: {settings?.render.scale}</div>
-                <div>フォント: {settings?.render.fontFilePath ? '指定あり' : '未指定（既定フォント探索）'}</div>
               </div>
               <div className="space-y-2">
                 <Label>テスト用動画</Label>
@@ -687,6 +645,85 @@ const Settings = () => {
               <CardDescription>基本的なアプリケーション設定です。</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
+              {/* Watched Folders */}
+              <div className="space-y-2">
+                <Label>フォルダ監視</Label>
+                <p className="text-xs text-muted-foreground">指定フォルダに追加された画像・動画を定期的に検出して自動処理します。未指定のクロマ素材は合成しません。</p>
+                <div className="space-y-3">
+                  {(settings?.general.watchedFolders || []).map((f, idx) => (
+                    <div key={f.path} className="flex flex-col gap-2 rounded-lg border p-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-3">
+                          <Switch checked={!!f.isActive} onCheckedChange={(v) => updateWatchedFolder(idx, { isActive: v })} />
+                          <span className={!f.isActive ? 'text-muted-foreground' : ''}>{f.path}</span>
+                        </div>
+                        <Button variant="ghost" size="icon" onClick={() => removeWatchedFolder(idx)}><Trash2 className="h-4 w-4" /></Button>
+                      </div>
+                      <div className="grid sm:grid-cols-3 gap-3">
+                        <div className="space-y-1">
+                          <Label className="text-xs">間隔（分）</Label>
+                          <Input type="number" min={1} value={f.intervalMinutes} onChange={(e) => updateWatchedFolder(idx, { intervalMinutes: Math.max(1, Number(e.target.value) || 1) })} />
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs">サブフォルダも対象</Label>
+                          <div className="flex items-center h-9"><Switch checked={!!f.includeSubfolders} onCheckedChange={(v) => updateWatchedFolder(idx, { includeSubfolders: v })} /></div>
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs">クロマキー</Label>
+                          <Select value={f.chromaMode || 'none'} onValueChange={(v: 'none'|'image'|'video') => updateWatchedFolder(idx, { chromaMode: v })}>
+                            <SelectTrigger><SelectValue placeholder="選択" /></SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="none">なし</SelectItem>
+                              <SelectItem value="image">画像</SelectItem>
+                              <SelectItem value="video">動画</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div className="space-y-1">
+                          {f.chromaMode === 'image' && (
+                            <div className="flex items-center gap-2">
+                              <Button variant="outline" size="sm" onClick={async () => {
+                                const filters = [{ name: 'Images', extensions: ['png','jpg','jpeg','webp'] }];
+                                const result = (window.files && window.files.pickFile) ? await window.files.pickFile('folderChromaImage', filters) : await window.electronAPI.openFileDialog();
+                                if (result) updateWatchedFolder(idx, { chromaImagePath: result });
+                              }}>画像選択</Button>
+                              <Button variant="ghost" size="sm" onClick={() => updateWatchedFolder(idx, { chromaImagePath: '' })}>クリア</Button>
+                              {f.chromaImagePath ? <Badge variant="default">設定済み</Badge> : <Badge variant="secondary">未指定</Badge>}
+                            </div>
+                          )}
+                          {f.chromaMode === 'video' && (
+                            <div className="flex items-center gap-2">
+                              <Button variant="outline" size="sm" onClick={async () => {
+                                const filters = [{ name: 'Videos', extensions: ['mp4','mov','mkv','webm'] }];
+                                const result = (window.files && window.files.pickFile) ? await window.files.pickFile('folderChromaVideo', filters) : await window.electronAPI.openFileDialog();
+                                if (result) updateWatchedFolder(idx, { chromaVideoPath: result });
+                              }}>動画選択</Button>
+                              <Button variant="ghost" size="sm" onClick={() => updateWatchedFolder(idx, { chromaVideoPath: '' })}>クリア</Button>
+                              {f.chromaVideoPath ? <Badge variant="default">設定済み</Badge> : <Badge variant="secondary">未指定</Badge>}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                      {((f.chromaMode === 'image' && !f.chromaImagePath) || (f.chromaMode === 'video' && !f.chromaVideoPath)) && (
+                        <p className="text-xs text-muted-foreground">未指定の場合、クロマキー合成は行われません。</p>
+                      )}
+                    </div>
+                  ))}
+                  <div>
+                    <Button variant="outline" onClick={addWatchedFolder}>監視フォルダを追加</Button>
+                  </div>
+                  <div className="grid sm:grid-cols-2 gap-3 mt-2">
+                    <div className="space-y-1">
+                      <Label className="text-xs">処理済みキャッシュ保持時間（時間）</Label>
+                      <Input type="number" min={1} value={settings?.general.watchedFoldersRetentionHours ?? 24} onChange={(e) => settings && updateSettings({ general: { ...settings.general, watchedFoldersRetentionHours: Math.max(1, Number(e.target.value) || 24) } })} />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">処理済みキャッシュ最大件数（合計）</Label>
+                      <Input type="number" min={100} value={settings?.general.watchedFoldersMaxCache ?? 2000} onChange={(e) => settings && updateSettings({ general: { ...settings.general, watchedFoldersMaxCache: Math.max(100, Number(e.target.value) || 2000) } })} />
+                    </div>
+                  </div>
+                </div>
+              </div>
               <div className="rounded-lg border p-4 space-y-3">
                 <div className="flex items-center justify-between">
                   <div>
@@ -806,41 +843,6 @@ const Settings = () => {
   );
 };
 
-// IMEに配慮したキャプション入力（合成時の確定を遅延）
-function CaptionInput({ value, onChange, placeholder, maxLength }: { value: string; onChange: (text: string) => void; placeholder?: string; maxLength?: number }) {
-  const [local, setLocal] = useState<string>(value ?? '');
-  const [composing, setComposing] = useState(false);
-
-  // 外部値変更に追従（編集中は維持）
-  useEffect(() => {
-    if (!composing) setLocal(value ?? '');
-  }, [value, composing]);
-
-  return (
-    <Input
-      type="text"
-      value={local}
-      placeholder={placeholder}
-      maxLength={maxLength}
-      onChange={(e) => {
-        const v = e.target.value;
-        setLocal(v);
-        if (!composing) onChange(v);
-      }}
-      onCompositionStart={() => setComposing(true)}
-      onCompositionEnd={(e) => {
-        setComposing(false);
-        const v = (e.target as HTMLInputElement).value;
-        onChange(v);
-      }}
-      onBlur={(e) => {
-        const v = (e.target as HTMLInputElement).value;
-        onChange(v);
-      }}
-    />
-  );
-}
-
 // リアルタイムの簡易プレビュー（Canvas）
 function RenderPreview() {
   const { settings } = useSettings();
@@ -849,24 +851,8 @@ function RenderPreview() {
   const cfg = settings?.render;
   const width = Math.max(180, Math.min(540, Math.round((cfg?.resolution.width ?? 1080) / 4)));
   const height = Math.max(320, Math.min(960, Math.round((cfg?.resolution.height ?? 1920) / 4)));
-  // Clamp caption heights so they never cover the whole screen
-  const userTopH = Math.max(0, cfg?.topCaptionHeight ?? Math.round((cfg?.resolution.height ?? 1920) * (120 / 1920)));
-  const userBottomH = Math.max(0, cfg?.bottomCaptionHeight ?? Math.round((cfg?.resolution.height ?? 1920) * (160 / 1920)));
-  const minContent = Math.max(10, Math.round(height * 0.3));
-  const topH = Math.min(userTopH, Math.max(0, height - minContent));
-  const bottomH = Math.min(userBottomH, Math.max(0, height - topH - minContent));
-  const bgColor = cfg?.teleTextBg ?? '#000000';
-  const opacity = Math.max(0, Math.min(1, cfg?.captionBgOpacity ?? 1));
-  const scale = Math.max(0.05, Math.min(5, cfg?.scale ?? 0.8));
-
-  const topText = cfg?.captions.top ?? '';
-  const bottomText = cfg?.captions.bottom ?? '';
-  const textColor = cfg?.captionTextColor ?? '#ffffff';
-  const topPos = (cfg?.topCaptionPosition as 'top'|'center'|'bottom') ?? 'center';
-  const bottomPos = (cfg?.bottomCaptionPosition as 'top'|'center'|'bottom') ?? 'center';
+  const scale = Math.max(0.05, Math.min(1.0, cfg?.scale ?? 0.8));
   const overlayPos = (cfg?.overlayPosition as 'center'|'top-center'|'bottom-center'|'custom') ?? 'center';
-  const topOffset = cfg?.topCaptionOffset ?? 0;
-  const bottomOffset = cfg?.bottomCaptionOffset ?? 0;
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -879,87 +865,24 @@ function RenderPreview() {
     ctx.fillStyle = '#1f2937';
     ctx.fillRect(0, 0, width, height);
 
-    // 上下ボックス
-    ctx.fillStyle = hexWithAlpha(bgColor, opacity);
-    // top
-    ctx.fillRect(0, 0, width, Math.min(topH, height));
-    // bottom
-    ctx.fillRect(0, Math.max(0, height - bottomH), width, Math.min(bottomH, height));
-
-    // 擬似オーバーレイ（中央寄せ、上下ボックスの安全領域内）
-    const safeHeight = Math.max(0, height - topH - bottomH);
-    const fgW = Math.min(width, Math.round(width * scale));
-    const fgH = Math.min(safeHeight, Math.round(safeHeight * scale));
+    // 擬似オーバーレイ（スケールと位置のみ）
+    const fgW = Math.max(10, Math.min(width, Math.round(width * scale)));
+    const fgH = Math.max(10, Math.min(height, Math.round(height * scale)));
     const fgX = Math.round((width - fgW) / 2);
-  // overlayPosition: center/top-center/bottom-center を反映
-  let fgY: number;
-    const pos = overlayPos;
-    if (pos === 'top-center') fgY = Math.round(topH);
-    else if (pos === 'bottom-center') fgY = Math.round(height - bottomH - fgH);
-  else fgY = Math.round(topH + (safeHeight - fgH) / 2);
+    let fgY: number;
+    if (overlayPos === 'top-center') fgY = 0;
+    else if (overlayPos === 'bottom-center') fgY = Math.max(0, height - fgH);
+    else /* center/custom */ fgY = Math.round((height - fgH) / 2);
+
     ctx.fillStyle = '#94a3b8';
     ctx.fillRect(fgX, fgY, fgW, fgH);
-
-  // テキスト
-  ctx.fillStyle = textColor;
-    ctx.textAlign = 'center';
-    // フォントサイズは概要値
-    const topFont = Math.max(10, Math.round(height * (48 / 1920)));
-    const bottomFont = Math.max(10, Math.round(height * (42 / 1920)));
-
-    // 上テキスト（位置指定: top/center/bottom）
-    ctx.font = `${topFont}px sans-serif`;
-    if (topPos === 'top') {
-      ctx.textBaseline = 'top';
-      const y = Math.max(0, Math.min(topH, 4 + topOffset));
-      ctx.fillText(topText, Math.round(width / 2), y);
-    } else if (topPos === 'bottom') {
-      ctx.textBaseline = 'bottom';
-      const y = Math.max(0, topH - 4 + topOffset);
-      ctx.fillText(topText, Math.round(width / 2), y);
-    } else {
-      ctx.textBaseline = 'middle';
-      const y = Math.round(topH / 2) + topOffset;
-      // clamp inside box
-      const yClamped = Math.max(0, Math.min(topH, y));
-      ctx.fillText(topText, Math.round(width / 2), yClamped);
-    }
-
-    // 下テキスト（位置指定: top/center/bottom）
-    ctx.font = `${bottomFont}px sans-serif`;
-    if (bottomPos === 'top') {
-      ctx.textBaseline = 'top';
-      const y = Math.round(height - bottomH + 4 + bottomOffset);
-      ctx.fillText(bottomText, Math.round(width / 2), y);
-    } else if (bottomPos === 'bottom') {
-      ctx.textBaseline = 'bottom';
-      const y = Math.max(0, height - 4 + bottomOffset);
-      ctx.fillText(bottomText, Math.round(width / 2), y);
-    } else {
-      ctx.textBaseline = 'middle';
-      const y = Math.round(height - bottomH / 2) + bottomOffset;
-      const minY = Math.round(height - bottomH);
-      const maxY = Math.round(height);
-      const yClamped = Math.max(minY, Math.min(maxY, y));
-      ctx.fillText(bottomText, Math.round(width / 2), yClamped);
-    }
-  }, [width, height, topH, bottomH, bgColor, opacity, scale, topText, bottomText, textColor, topPos, bottomPos, overlayPos, topOffset, bottomOffset]);
+  }, [width, height, scale, overlayPos]);
 
   return (
     <div className="rounded-md border bg-background p-3 inline-block">
       <canvas ref={canvasRef} style={{ width: `${width}px`, height: `${height}px` }} />
     </div>
   );
-}
-
-function hexWithAlpha(hex: string, alpha: number) {
-  // #RRGGBB を rgba(r,g,b,a) に変換
-  const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
-  if (!m) return `rgba(0,0,0,${alpha})`;
-  const r = parseInt(m[1], 16);
-  const g = parseInt(m[2], 16);
-  const b = parseInt(m[3], 16);
-  return `rgba(${r},${g},${b},${alpha})`;
 }
 
 export default Settings;

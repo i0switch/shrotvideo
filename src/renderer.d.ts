@@ -8,7 +8,7 @@ import type { AppSettings } from '@/core/settings';
 
 export interface IElectronAPI {
   getSettings: () => Promise<AppSettings>;
-  setSettings: (settings: AppSettings) => Promise<void>;
+  setSettings: (settings: AppSettings) => Promise<AppSettings>;
   openDirectoryDialog: () => Promise<string | null>;
   openFileDialog: () => Promise<string | null>;
   startMonitoring: () => Promise<void>;
@@ -25,6 +25,9 @@ export interface IElectronAPI {
   startInitialFetch: (platform: 'x'|'tiktok'|'youtube', accountId: string) => Promise<boolean>;
   testProcessAllOnce: () => Promise<{ ok: boolean; summary?: { totalAccounts: number; attempted: number; processed: number; }; error?: string }>;
   testScrapeX: (accountId: string) => Promise<string | null>;
+    // Watched folders
+    getWatchedFolders?: () => Promise<import('./core/settings').WatchedFolder[]>;
+    setWatchedFolders?: (folders: import('./core/settings').WatchedFolder[]) => Promise<boolean>;
 }
 
 export interface IAuthAPI {

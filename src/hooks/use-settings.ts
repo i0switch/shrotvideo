@@ -32,14 +32,9 @@ const mockSettings: AppSettings = {
     durationSec: 15,
     bgmPath: '',
     backgroundVideoPath: '',
-    captions: { top: '', bottom: '' },
     scale: 0.8,
-    teleTextBg: '#000000',
     qualityPreset: 'standard',
     overlayPosition: 'center',
-    topCaptionHeight: 120,
-    bottomCaptionHeight: 160,
-    captionBgOpacity: 1.0,
   },
 };
 
@@ -66,7 +61,7 @@ export function useSettings() {
     refetchOnWindowFocus: false,
   });
 
-  const { mutate: updateSettings, isPending: isUpdating } = useMutation<void, Error, Partial<AppSettings>>({
+  const { mutate: updateSettings, isPending: isUpdating } = useMutation<AppSettings | void, Error, Partial<AppSettings>>({
     // 楽観的更新: 先にキャッシュを更新してUIを即時反映
     onMutate: async (newSettingsPatch: Partial<AppSettings>) => {
       await queryClient.cancelQueries({ queryKey: SETTINGS_QUERY_KEY });
@@ -88,10 +83,17 @@ export function useSettings() {
         throw new Error("Cannot update settings: current settings not available.");
       }
       const newSettings = mergeWith({}, currentSettings, newSettingsPatch, arrayReplacementCustomizer);
-      await window.electronAPI.setSettings(newSettings);
+      // メインプロセスは最新の全設定を返す（main.tsのset-settings）
+      const updated = await window.electronAPI.setSettings(newSettings as AppSettings);
+      return updated;
     },
-    onSuccess: () => {
-      if (isElectron) {
+    onSuccess: (data) => {
+      if (!isElectron) return;
+      // 返却された最新設定があれば即時反映し、再取得を最小化
+      if (data && typeof data === 'object') {
+        queryClient.setQueryData<AppSettings>(SETTINGS_QUERY_KEY, data as AppSettings);
+      } else {
+        // 念のための保険として再フェッチ
         queryClient.invalidateQueries({ queryKey: SETTINGS_QUERY_KEY });
       }
     },

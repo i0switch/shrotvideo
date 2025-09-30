@@ -171,13 +171,7 @@ const Index = () => {
                 BGM: {settings?.render.bgmPath ? "設定済み" : "未設定"} |
                 背景動画: {settings?.render.backgroundVideoPath ? "設定済み" : "未設定"}
               </p>
-              {(settings?.render.captions.top || settings?.render.captions.bottom) && (
-                <p className="text-sm text-muted-foreground">
-                  テロップ: 上「{settings?.render.captions.top}」下「{settings?.render.captions.bottom}」
-                </p>
-              )}
               <p className="text-sm text-muted-foreground">
-                テロップ背景色: {settings?.render.teleTextBg} |
                 品質: {settings?.render.qualityPreset} |
                 オーバーレイ位置: {settings?.render.overlayPosition}
               </p>

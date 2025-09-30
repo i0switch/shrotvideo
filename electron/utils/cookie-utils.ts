@@ -2,7 +2,14 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import log from 'electron-log';
-import * as keytar from 'keytar';
+// keytar may be unavailable on some systems; load dynamically when needed
+let _keytarPromise: Promise<any> | null = null;
+async function getKeytar(): Promise<any | null> {
+  if (!_keytarPromise) {
+    _keytarPromise = import('keytar').catch(() => null);
+  }
+  return _keytarPromise;
+}
 
 // Use shared Platform type to avoid circular deps with electron/login
 import type { Platform } from '../../src/core/settings.js';
@@ -31,6 +38,11 @@ export function toNetscapeCookie(cookies: Electron.Cookie[]): string {
 export async function createCookieFileIfAny(platform: Platform): Promise<string | undefined> {
   if (platform !== 'youtube' && platform !== 'tiktok') return undefined;
   try {
+    const keytar = await getKeytar();
+    if (!keytar) {
+      log.info(`[cookie-utils:${platform}] keytar not available; proceeding without cookies.`);
+      return undefined;
+    }
     const raw = await keytar.getPassword(APP, platform);
     if (!raw) {
       log.info(`[cookie-utils:${platform}] No raw credentials found in keystore.`);

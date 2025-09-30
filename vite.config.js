@@ -19,22 +19,38 @@ export default ({ mode }) => ({
     },
   // Avoid duplicate React instances
   dedupe: ["react", "react-dom"],
-    conditions: ["module", "browser", "development"],
   },
   // Avoid OneDrive locking under node_modules/.vite by using a temp cache dir
   cacheDir: path.join(os.tmpdir(), "vite-cache-dougadownload"),
   // Use esbuild to transform React JSX automatically
+  // Important: ensure production build does NOT emit jsxDEV calls
   esbuild: {
     jsx: 'automatic',
     jsxImportSource: 'react',
+    jsxDev: mode === 'development',
   },
   optimizeDeps: {
     // Force re-optimize on server start to avoid 504 Outdated Optimize Dep
-  force: true,
-  exclude: ["react/jsx-runtime", "react/jsx-dev-runtime"],
+    force: true,
+    include: [
+      'react',
+      'react-dom',
+      'react/jsx-runtime',
+      'react/jsx-dev-runtime',
+    ],
+    exclude: [
+      // Some ESM packages are fine without pre-bundling under modern browsers/electron
+      '@tanstack/react-query',
+      '@radix-ui/react-tooltip',
+      '@radix-ui/react-toast',
+      '@radix-ui/react-portal',
+      '@radix-ui/react-popper',
+      'class-variance-authority',
+    ],
   },
   define: {
     'process.env.NODE_ENV': JSON.stringify(mode === 'development' ? 'development' : 'production'),
+    __DEV__: mode === 'development',
   },
   build: {
     outDir: 'dist/renderer',

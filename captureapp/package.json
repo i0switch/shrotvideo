@@ -1,0 +1,100 @@
+{
+  "name": "captureapp",
+  "version": "0.1.0",
+  "description": "Electron app that captures latest X posts and produces screenshots or composited videos.",
+  "private": true,
+  "main": "dist/main/app/main/main.js",
+  "author": "",
+  "license": "MIT",
+  "scripts": {
+    "clean": "rimraf dist release logs test-results coverage playwright-report .nyc_output .cache",
+  "clean:reports": "rimraf outputs/**/_reports",
+    "clean:all": "npm-run-all clean clean:reports",
+  "build:main": "tsc -p tsconfig.main.json && tsc-alias -p tsconfig.main.json",
+  "build:preload": "tsc -p tsconfig.preload.json && tsc-alias -p tsconfig.preload.json",
+    "build:renderer": "vite build --config config/vite.renderer.config.ts",
+    "build": "npm-run-all clean build:main build:preload build:renderer",
+  "dev": "cross-env NODE_ENV=development npm-run-all --parallel dev:main dev:preload dev:renderer dev:electron",
+  "dev:main": "npm-run-all --parallel dev:main:ts dev:main:alias",
+  "dev:main:ts": "tsc -p tsconfig.main.json --watch",
+  "dev:main:alias": "tsc-alias -p tsconfig.main.json --watch",
+  "dev:preload": "npm-run-all --parallel dev:preload:ts dev:preload:alias",
+  "dev:preload:ts": "tsc -p tsconfig.preload.json --watch",
+  "dev:preload:alias": "tsc-alias -p tsconfig.preload.json --watch",
+    "dev:renderer": "vite dev --config config/vite.renderer.config.ts",
+    "dev:electron": "wait-on tcp:5173 && electron .",
+    "typecheck": "npm-run-all typecheck:main typecheck:preload typecheck:renderer typecheck:tests",
+    "typecheck:main": "tsc -p tsconfig.main.json --noEmit",
+    "typecheck:preload": "tsc -p tsconfig.preload.json --noEmit",
+    "typecheck:renderer": "tsc -p tsconfig.renderer.json --noEmit",
+    "typecheck:tests": "tsc -p tsconfig.tests.json --noEmit",
+    "lint": "eslint \"{app,scripts,tests}/**/*.{ts,tsx}\" --max-warnings=0",
+    "playwright:install": "playwright install --with-deps",
+  "playwright:test": "playwright test",
+  "test": "npm run playwright:test -- --reporter=list",
+    "package": "npm run build && electron-builder",
+    "final": "npm run build && node scripts/runFinal.js"
+  },
+  "dependencies": {
+    "@playwright/test": "^1.48.2",
+  "axios": "^1.7.3",
+  "dayjs": "^1.11.13",
+    "electron-log": "^5.1.4",
+    "electron-store": "^9.0.0",
+    "ffmpeg-static": "^5.2.0",
+    "fluent-ffmpeg": "^2.1.2",
+    "p-limit": "^4.0.0",
+    "playwright": "^1.48.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "styled-components": "^6.1.11",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/fluent-ffmpeg": "^2.1.25",
+    "@types/node": "^22.5.4",
+    "@types/react": "^18.3.5",
+    "@types/react-dom": "^18.3.0",
+    "@typescript-eslint/eslint-plugin": "^8.1.0",
+    "@typescript-eslint/parser": "^8.1.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "cross-env": "^7.0.3",
+  "electron": "^31.3.0",
+  "electron-builder": "^24.13.3",
+  "eslint": "^8.57.0",
+    "eslint-config-prettier": "^9.1.0",
+    "eslint-plugin-react-hooks": "^4.6.0",
+    "npm-run-all": "^4.1.5",
+    "prettier": "^3.3.3",
+    "rimraf": "^5.0.10",
+    "ts-node": "^10.9.2",
+  "tsc-alias": "^1.8.8",
+  "tsconfig-paths": "^4.2.0",
+    "typescript": "^5.5.4",
+    "vite": "^5.4.8",
+    "wait-on": "^7.2.0"
+  },
+  "build": {
+    "appId": "com.captureapp.desktop",
+    "files": [
+      "dist/main/**/*",
+      "dist/preload/**/*",
+      "dist/renderer/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.video"
+    },
+    "win": {
+      "target": "nsis",
+      "artifactName": "captureapp-${version}-setup.exe"
+    },
+    "directories": {
+      "output": "release"
+    }
+  }
+}

@@ -3,7 +3,6 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import log from 'electron-log';
 import { app } from 'electron';
-import * as keytar from 'keytar';
 import { getYtdlpClient } from './scraper';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -73,7 +72,10 @@ export async function downloadVideoToTemp(pageUrl: string, platform: Platform): 
 
     if (platform === 'youtube' || platform === 'tiktok') {
       try {
-          const raw = await keytar.getPassword(APP, platform);
+          // keytar may be unavailable on some systems; load dynamically
+          let keytar: any = null;
+          try { keytar = await import('keytar'); } catch { keytar = null; }
+          const raw = keytar ? await keytar.getPassword(APP, platform) : null;
           if (raw) {
               const cookies = JSON.parse(raw) as Electron.Cookie[];
               if (cookies.length > 0) {
@@ -88,9 +90,9 @@ ${cookieFileContent.substring(0, 200)}`);
               } else {
                 log.info(`[downloader:${platform}] DEBUG: No stored cookies found.`);
               }
-          } else {
-            log.info(`[downloader:${platform}] DEBUG: No raw credential entry found.`);
-          }
+                    } else {
+                        log.info(`[downloader:${platform}] DEBUG: No raw credential entry found (or keytar not available).`);
+                    }
       } catch (e) {
           log.warn(`[downloader:${platform}] WARN: Failed to load cookies`, e);
     }

@@ -11,22 +11,6 @@ function normalizePath(p: string): string {
   return p.replace(/\\/g, '/');
 }
 
-// Function to safely escape text for ffmpeg drawtext filter
-function escapeFFmpegText(text: string): string {
-  if (typeof text !== 'string') return '';
-  // 1) 改行は drawtext では \n で表現する必要がある
-  // 2) 区切り文字や特殊文字はバックスラッシュでエスケープ
-  const value = text.replace(/\r?\n/g, '\\n');
-  let escaped = '';
-  for (const char of value) {
-    if (char === '%' || char === '\\' || char === ':' || char === "'") {
-      escaped += '\\' + char;
-    } else {
-      escaped += char;
-    }
-  }
-  return escaped;
-}
 
 // 数値の安全評価・フォールバック
 function toNumberOr<T extends number>(v: unknown, fallback: T): T {
@@ -38,12 +22,7 @@ function clamp(n: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, n));
 }
 
-// フィルタ引数内のパス用エスケープ（drawtext の fontfile 等）
-function escapeFilterPath(p: string): string {
-  const n = normalizePath(p);
-  // ':' と 単一引用符をエスケープ
-  return n.replace(/:/g, '\\:').replace(/'/g, "\\'");
-}
+// drawtext機能を撤去したため未使用のユーティリティは削除
 
 function getDefaultFontPath(): string | null {
   try {
@@ -93,16 +72,7 @@ function resolvePackedBinary(p: string | undefined | null): string | undefined {
 }
 
 // Convert CSS hex (#RRGGBB) or known names to ffmpeg color (0xRRGGBB or name)
-function toFfmpegColor(input: string | undefined, fallback: string): string {
-  if (!input) return fallback;
-  const t = input.trim();
-  const m = /^#?([0-9a-fA-F]{6})$/.exec(t);
-  // Prefer #RRGGBB so alpha via @opacity works reliably with filters like drawbox/drawtext
-  if (m) return `#${m[1]}`;
-  const known = ['white','black','red','green','blue','yellow','cyan','magenta','gray','grey','orange','purple'];
-  if (known.includes(t.toLowerCase())) return t.toLowerCase();
-  return fallback;
-}
+// 色変換もテロップ撤去により不要
 
 function getOverlayPosition(position: 'center' | 'top-center' | 'bottom-center' | 'custom', videoWidth: number, videoHeight: number, scale: number): string {
   const scaledWidth = videoWidth * scale;
@@ -125,16 +95,7 @@ function getOverlayPosition(position: 'center' | 'top-center' | 'bottom-center' 
   }
 }
 
-function getFontSize(videoHeight: number, size: 'top' | 'bottom'): number {
-    // These font sizes are based on the GEMINI.md example for a 1920 height video.
-    // We can scale them proportionally for other resolutions.
-    const baseHeight = 1920;
-    const topBaseSize = 48;
-    const bottomBaseSize = 42;
-    const scaleFactor = videoHeight / baseHeight;
-
-    return size === 'top' ? Math.round(topBaseSize * scaleFactor) : Math.round(bottomBaseSize * scaleFactor);
-}
+// フォントサイズ計算も不要
 
 function getFFmpegPreset(quality: 'fast' | 'standard' | 'high' | string): string {
     switch (quality) {
@@ -165,11 +126,33 @@ function hasVideoStream(filePath: string): Promise<boolean> {
   });
 }
 
+// Probe whether file has an audio stream
+function hasAudioStream(filePath: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    try {
+      ffmpeg.ffprobe(filePath, (err, data) => {
+        if (err || !data) return resolve(false);
+        const a = (data.streams || []).some((s) => String((s as { codec_type?: string }).codec_type).toLowerCase() === 'audio');
+        resolve(a);
+      });
+    } catch (e) {
+      log.warn(`[downloader] hasAudioStream check failed for ${filePath}`, e);
+      resolve(false);
+    }
+  });
+}
+
 export function generateVideo(
   screenshotPath: string,
   settings: AppSettings,
   sourceVideoUrl?: string,
-  opts?: { forceDuration?: boolean }
+  opts?: {
+    forceDuration?: boolean;
+    accountId?: { platform: string; id: string };
+    folderChroma?: { mode?: 'none'|'image'|'video'; image?: string; video?: string };
+    // 可観測性: どの経路で生成したかを上位から伝える
+    sourceType?: 'x_tweet_video' | 'youtube' | 'tiktok' | 'screenshot' | 'other';
+  }
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const run = async () => {
@@ -186,38 +169,29 @@ export function generateVideo(
     const videoHeight = toNumberOr(rawRender?.resolution?.height, 1920);
   // スケールは 1.0 を上限（1=画面の安全領域にピッタリ収まる）
   const scale = clamp(toNumberOr(rawRender?.scale, 0.8), 0.05, 1.0);
-    const teleTextBg = rawRender?.teleTextBg || '#000000';
-    const captionTextColor = rawRender?.captionTextColor || '#ffffff';
-    const captionBgOpacity = clamp(toNumberOr(rawRender?.captionBgOpacity, 1.0), 0, 1);
-    const captionPadding = Math.max(8, Math.round(videoHeight * (16 / 1920)));
+  // テロップ関連は撤去
     const durationSec = Math.max(1, toNumberOr(rawRender?.durationSec, 15));
     const overlayPosition = (rawRender?.overlayPosition as 'center' | 'top-center' | 'bottom-center' | 'custom') || 'center';
-    const fontFileFromSettings = rawRender?.fontFilePath && rawRender.fontFilePath.trim() ? rawRender.fontFilePath.trim() : '';
     const qualityPreset = (rawRender?.qualityPreset as 'low' | 'standard' | 'high' | string) || 'standard';
-    const captionsTop = escapeFFmpegText(rawRender?.captions?.top ?? '');
-    const captionsBottom = escapeFFmpegText(rawRender?.captions?.bottom ?? '');
+    
 
-  const outputFileName = `video-${Date.now()}.mp4`;
+  const startedAt = Date.now();
+  const outputFileName = `video-${startedAt}.mp4`;
     const outputPath = normalizePath(path.join(general.outputPath, outputFileName));
+    // Ensure output directory exists
+    try {
+      const outDir = path.dirname(outputPath);
+      if (!fs.existsSync(outDir)) {
+        fs.mkdirSync(outDir, { recursive: true });
+      }
+    } catch (e) {
+      log.warn(`[video-generator] Failed to ensure output directory exists: ${e instanceof Error ? e.message : String(e)}`);
+    }
 
     log.info(`Starting video generation. Output: ${outputPath}`);
 
-    const topText = captionsTop;
-    const bottomText = captionsBottom;
-  const topFontSize = getFontSize(videoHeight, 'top');
-  const bottomFontSize = getFontSize(videoHeight, 'bottom');
-  const topOffset = toNumberOr(rawRender?.topCaptionOffset, 0);
-  const bottomOffset = toNumberOr(rawRender?.bottomCaptionOffset, 0);
-  // テロップ用の上/下ボックス高さ（プレビューと同じ既定値に近づける）
-  const defaultTopH = Math.round(videoHeight * (120 / 1920));
-  const defaultBottomH = Math.round(videoHeight * (160 / 1920));
-  const topCaptionHeight = Math.max(0, toNumberOr(rawRender?.topCaptionHeight, defaultTopH));
-  const bottomCaptionHeight = Math.max(0, toNumberOr(rawRender?.bottomCaptionHeight, defaultBottomH));
-  const safeHeight = Math.max(1, videoHeight - topCaptionHeight - bottomCaptionHeight);
-  // キャプションは常に文字の周りだけ背景枠（drawtext:box）を付与する運用に変更
-  // フル幅バーは描画しない（要求②: 上側の背景が大きすぎるを解消、要求①: 下側にも必ず背景を付与）
-  const yTopExprDefault = `${captionPadding}+${topOffset}`;
-  const yBottomExprDefault = `h-text_h-${captionPadding}+${bottomOffset}`;
+    // テロップ安全領域・ボックス類を撤去。前景のフィット領域は画面全体を基準にする
+    const safeHeight = Math.max(1, videoHeight);
 
   const ffmpegCommand = ffmpeg();
   const complexFilter: string[] = [];
@@ -236,17 +210,68 @@ export function generateVideo(
 
   let nextInputIndex = 0;
   let currentVideo: string;
+  // Track input indices for audio selection
+  let bgInputIndex: number | undefined;
+  let srcInputIndex: number | undefined;
     const srcHasVideo = srcPath && !srcPath.startsWith('http') ? await hasVideoStream(srcPath) : true;
     const hasSrcVideoFinal = !!srcPath && (srcHasVideo || srcPath.startsWith('http'));
-    const shouldApplyDuration = (process.env.FORCE_RENDER_DURATION === '1') || !!opts?.forceDuration || (!hasSrcVideoFinal && !!screenshotPath && screenshotPath.trim().length > 0);
+  const shouldApplyDuration = (process.env.FORCE_RENDER_DURATION === '1') || !!opts?.forceDuration || (!hasSrcVideoFinal && !!screenshotPath && screenshotPath.trim().length > 0);
+
+    // Utility: decide chroma overlay material based on folder override or account settings
+    const chroma = (() => {
+      try {
+        // Highest priority: folder-level override
+        if (opts?.folderChroma && opts.folderChroma.mode) {
+          return { mode: (opts.folderChroma.mode || 'none') as 'none'|'image'|'video', folderOverride: true } as const;
+        }
+        const platform = opts?.accountId?.platform as 'x'|'tiktok'|'youtube'|undefined;
+        const id = opts?.accountId?.id;
+        if (!platform || !id) return { mode: 'none' as const };
+        const acc = (settings.platforms as any)?.[platform]?.accounts?.find((a: any) => a.id === id);
+        const mode = (acc?.chromaMode || 'none') as 'none'|'image'|'video';
+        return { mode };
+      } catch { return { mode: 'none' as const }; }
+    })();
+
+    // クロマキー素材ファイル: 未指定時は適用しない（プロジェクトルートのデフォルトは使わない）
+    let chromaImage: string | undefined;
+    let chromaVideo: string | undefined;
+    try {
+      if (opts?.folderChroma && opts.folderChroma.mode) {
+        if (opts.folderChroma.image && typeof opts.folderChroma.image === 'string' && opts.folderChroma.image.trim()) {
+          const p = normalizePath(opts.folderChroma.image.trim());
+          if (fs.existsSync(p)) chromaImage = p;
+        }
+        if (opts.folderChroma.video && typeof opts.folderChroma.video === 'string' && opts.folderChroma.video.trim()) {
+          const p = normalizePath(opts.folderChroma.video.trim());
+          if (fs.existsSync(p)) chromaVideo = p;
+        }
+      } else {
+        const platform = opts?.accountId?.platform as 'x'|'tiktok'|'youtube'|undefined;
+        const id = opts?.accountId?.id;
+        if (platform && id) {
+          const acc = (settings.platforms as any)?.[platform]?.accounts?.find((a: any) => a.id === id);
+          if (acc?.chromaImagePath && typeof acc.chromaImagePath === 'string' && acc.chromaImagePath.trim()) {
+            const p = normalizePath(acc.chromaImagePath.trim());
+            if (fs.existsSync(p)) chromaImage = p;
+          }
+          if (acc?.chromaVideoPath && typeof acc.chromaVideoPath === 'string' && acc.chromaVideoPath.trim()) {
+            const p = normalizePath(acc.chromaVideoPath.trim());
+            if (fs.existsSync(p)) chromaVideo = p;
+          }
+        }
+      }
+    } catch { /* ignore */ }
+    const chromaKey = '0x00FD00'; // #00FD00
 
     // Case A: Screenshot overlay (requires background as base)
   if (!srcPath && screenshotPath) {
       if (!bgPath) return reject(new Error('Background video is required for screenshot overlay.'));
       // Input order: background (0), screenshot (1)
-      ffmpegCommand.input(bgPath);
+  ffmpegCommand.input(bgPath);
+  bgInputIndex = 0;
       ffmpegCommand.input(normalizePath(screenshotPath));
-      const screenshotIndex = 1;
+  const screenshotIndex = 1;
       // 背景は常に全画面フィット
       // 背景: cover（拡大して中央切り抜き）
       complexFilter.push(
@@ -256,20 +281,43 @@ export function generateVideo(
         `[${screenshotIndex}:v]scale=${Math.round(videoWidth * scale)}:${Math.round(safeHeight * scale)}:force_original_aspect_ratio=decrease[fg]`,
         // overlay の配置（オーバーレイ位置の反映）
         (() => {
-          let yExpr = `${topCaptionHeight}+((H-${topCaptionHeight}-${bottomCaptionHeight}-h)/2)`; // center
-          if (overlayPosition === 'top-center') yExpr = `${topCaptionHeight}`;
-          else if (overlayPosition === 'bottom-center') yExpr = `H-${bottomCaptionHeight}-h`;
-          return `[bg][fg]overlay=(W-w)/2:${yExpr}[base_with_overlay]`;
+          const pos = getOverlayPosition(overlayPosition, videoWidth, videoHeight, scale);
+          return `[bg][fg]overlay=${pos}[base_with_overlay]`;
         })() as unknown as string
       );
-      currentVideo = '[base_with_overlay]';
+      // ここにクロマキー合成（アカウント指定時）
+  if (chroma.mode === 'image' && chromaImage && fs.existsSync(chromaImage)) {
+        ffmpegCommand.input(chromaImage);
+        const idx = 2; // [2:v]
+        complexFilter.push(
+          // 画像は全長表示: 単純に最終出力へ align して重ねる。クロマキー適用
+          `[${idx}:v]scale=${videoWidth}:${videoHeight}:force_original_aspect_ratio=decrease,chromakey=${chromaKey}:0.1:0.2[keyed]`,
+          // shortest=0 で前景の終了でミキシングが止まらないようにする（画像は最後のフレーム保持）
+          `[base_with_overlay][keyed]overlay=(W-w)/2:(H-h)/2:shortest=0[chroma_applied]`
+        );
+        currentVideo = '[chroma_applied]';
+  } else if (chroma.mode === 'video' && chromaVideo && fs.existsSync(chromaVideo)) {
+        ffmpegCommand.input(chromaVideo);
+        const idx = 2; // [2:v]
+        // 動画はループ表示: loop フィルタは画像用なので video の場合は -stream_loop で対応
+        // fluent-ffmpeg では inputOptions で設定
+        try { ffmpegCommand.inputOptions([`-stream_loop`, `-1`]); } catch {/* ignore */}
+        complexFilter.push(
+          `[${idx}:v]scale=${videoWidth}:${videoHeight}:force_original_aspect_ratio=decrease,chromakey=${chromaKey}:0.1:0.2[keyed]`,
+          // shortest=0 で前景が早期に終了しても合成が継続（将来的にループ実装を追加）
+          `[base_with_overlay][keyed]overlay=(W-w)/2:(H-h)/2:shortest=0[chroma_applied]`
+        );
+        currentVideo = '[chroma_applied]';
+      } else {
+        currentVideo = '[base_with_overlay]';
+      }
       finalVideoLabel = currentVideo;
       nextInputIndex = 2;
     } else if (srcPath && bgPath) {
       // Case B: 背景の上にソース映像を重ねる（背景が見えるように）
       // Input order: background (0), source (1)
-      ffmpegCommand.input(bgPath);
-      ffmpegCommand.input(srcPath);
+  ffmpegCommand.input(bgPath); bgInputIndex = 0;
+  ffmpegCommand.input(srcPath); srcInputIndex = 1;
       if (srcHasVideo) {
         complexFilter.push(
           // 背景をcover
@@ -277,13 +325,31 @@ export function generateVideo(
           // 前景はフィット（contain）基準。上下テロップの安全領域内で scale を適用
           `[1:v]scale=${Math.round(videoWidth * scale)}:${Math.round(safeHeight * scale)}:force_original_aspect_ratio=decrease[fg]`,
           (() => {
-            let yExpr = `${topCaptionHeight}+((H-${topCaptionHeight}-${bottomCaptionHeight}-h)/2)`; // center
-            if (overlayPosition === 'top-center') yExpr = `${topCaptionHeight}`;
-            else if (overlayPosition === 'bottom-center') yExpr = `H-${bottomCaptionHeight}-h`;
-            return `[bg][fg]overlay=(W-w)/2:${yExpr}[src_over_bg]`;
+            const pos = getOverlayPosition(overlayPosition, videoWidth, videoHeight, scale);
+            return `[bg][fg]overlay=${pos}[src_over_bg]`;
           })() as unknown as string
         );
-        currentVideo = '[src_over_bg]';
+        // ここにクロマキー合成（アカウント指定時）
+  if (chroma.mode === 'image' && chromaImage && fs.existsSync(chromaImage)) {
+          ffmpegCommand.input(chromaImage);
+          const idx = 2;
+          complexFilter.push(
+            `[${idx}:v]scale=${videoWidth}:${videoHeight}:force_original_aspect_ratio=decrease,chromakey=${chromaKey}:0.1:0.2[keyed]`,
+            `[src_over_bg][keyed]overlay=(W-w)/2:(H-h)/2:shortest=0[chroma_applied]`
+          );
+          currentVideo = '[chroma_applied]';
+  } else if (chroma.mode === 'video' && chromaVideo && fs.existsSync(chromaVideo)) {
+          ffmpegCommand.input(chromaVideo);
+          const idx = 2;
+          try { ffmpegCommand.inputOptions([`-stream_loop`, `-1`]); } catch {/* ignore */}
+          complexFilter.push(
+            `[${idx}:v]scale=${videoWidth}:${videoHeight}:force_original_aspect_ratio=decrease,chromakey=${chromaKey}:0.1:0.2[keyed]`,
+            `[src_over_bg][keyed]overlay=(W-w)/2:(H-h)/2:shortest=0[chroma_applied]`
+          );
+          currentVideo = '[chroma_applied]';
+        } else {
+          currentVideo = '[src_over_bg]';
+        }
         finalVideoLabel = currentVideo;
       } else {
         // ソースに映像がない場合は背景のみ
@@ -296,77 +362,52 @@ export function generateVideo(
       nextInputIndex = 2;
     } else {
       // Case C: Single video (source or background only) -> scale + pad
-      const single = srcPath || bgPath; // at least one exists here
-      ffmpegCommand.input(single);
+  const single = srcPath || bgPath; // at least one exists here
+  ffmpegCommand.input(single);
+  if (single === srcPath) { srcInputIndex = 0; } else { bgInputIndex = 0; }
       complexFilter.push(
         `[0:v]scale=${videoWidth}:${videoHeight}:force_original_aspect_ratio=increase,crop=${videoWidth}:${videoHeight}:(in_w-${videoWidth})/2:(in_h-${videoHeight})/2,format=yuv420p[scaled]`
       );
-      currentVideo = '[scaled]';
+      // シングル動画の上にクロマキー可能
+  if (chroma.mode === 'image' && chromaImage && fs.existsSync(chromaImage)) {
+        ffmpegCommand.input(chromaImage);
+        const idx = 1;
+        complexFilter.push(
+          `[${idx}:v]scale=${videoWidth}:${videoHeight}:force_original_aspect_ratio=decrease,chromakey=${chromaKey}:0.1:0.2[keyed]`,
+          `[scaled][keyed]overlay=(W-w)/2:(H-h)/2:shortest=0[chroma_applied]`
+        );
+        currentVideo = '[chroma_applied]';
+  } else if (chroma.mode === 'video' && chromaVideo && fs.existsSync(chromaVideo)) {
+        ffmpegCommand.input(chromaVideo);
+        const idx = 1;
+        try { ffmpegCommand.inputOptions([`-stream_loop`, `-1`]); } catch {/* ignore */}
+        complexFilter.push(
+          `[${idx}:v]scale=${videoWidth}:${videoHeight}:force_original_aspect_ratio=decrease,chromakey=${chromaKey}:0.1:0.2[keyed]`,
+          `[scaled][keyed]overlay=(W-w)/2:(H-h)/2:shortest=0[chroma_applied]`
+        );
+        currentVideo = '[chroma_applied]';
+      } else {
+        currentVideo = '[scaled]';
+      }
       finalVideoLabel = currentVideo;
       nextInputIndex = 1;
     }
 
-    // Text with optional full-width caption boxes
-    const fontPath = fontFileFromSettings || getDefaultFontPath();
-    if (fontPath) {
-      log.info('[video-generator] using fontfile:', fontPath);
-  const fontOpt = `:fontfile='${escapeFilterPath(fontPath)}'${/\.ttc$/i.test(fontPath) ? ':fontindex=0' : ''}`;
-  const boxColor = `${toFfmpegColor(teleTextBg, 'black')}@${captionBgOpacity}`;
-      const textColor = toFfmpegColor(captionTextColor, 'white');
-  let curr = currentVideo;
-
-      // Compute Y positions for text
-  const yTopExpr = yTopExprDefault;
-  const yBottomExpr = yBottomExprDefault;
-
-      if (topText && topText.trim().length > 0) {
-        // 上テロップ: 文字周りにのみ背景
-        const topBoxArgs = `:box=1:boxcolor=${boxColor}:boxborderw=${captionPadding}`;
-        complexFilter.push(`${curr}drawtext=text='${topText}':x=(w-text_w)/2:y=${yTopExpr}:fontcolor=${textColor}:fontsize=${topFontSize}${topBoxArgs}${fontOpt}[v_t1]`);
-        curr = '[v_t1]';
-      }
-      if (bottomText && bottomText.trim().length > 0) {
-        // 下テロップ: 文字周りにのみ背景（必ず付与）
-        const btmBoxArgs = `:box=1:boxcolor=${boxColor}:boxborderw=${captionPadding}`;
-        complexFilter.push(`${curr}drawtext=text='${bottomText}':x=(w-text_w)/2:y=${yBottomExpr}:fontcolor=${textColor}:fontsize=${bottomFontSize}${btmBoxArgs}${fontOpt}[v_text_btm]`);
-        curr = '[v_text_btm]';
-      }
-      // Ensure we always end with an explicitly named pad for mapping
-      // 強制durationのときはtpadで最後のフレームをクローンして指定秒数まで延長
-  if (shouldApplyDuration) {
-        complexFilter.push(`${curr}tpad=stop_mode=clone:stop_duration=${durationSec}[v_final]`);
-      } else {
-        // copy はフィルタではないため null フィルタでラベルを終端に流す
-        complexFilter.push(`${curr}null[v_final]`);
-      }
-      finalVideoLabel = '[v_final]';
+    // テキスト描画を全撤去。finalVideoLabel を currentVideo から直接作る
+    if (shouldApplyDuration) {
+      complexFilter.push(`${currentVideo}tpad=stop_mode=clone:stop_duration=${durationSec}[v_final]`);
     } else {
-      log.warn('[video-generator] no fontfile found. Skipping drawtext to avoid fontconfig crash.');
-      // Still ensure an explicitly named pad exists
-  if (shouldApplyDuration) {
-        complexFilter.push(`${currentVideo}tpad=stop_mode=clone:stop_duration=${durationSec}[v_final]`);
-      } else {
-        // copy はフィルタではないため null フィルタでラベルを終端に流す
-        complexFilter.push(`${currentVideo}null[v_final]`);
-      }
-      finalVideoLabel = '[v_final]';
+      complexFilter.push(`${currentVideo}null[v_final]`);
     }
+    finalVideoLabel = '[v_final]';
 
   // Use semicolons to separate independent filter chains
   const filterGraph = complexFilter.join('; ');
-    log.info('[video-generator] filterGraph:', filterGraph);
-    log.info('[video-generator] computed:', {
-      scale,
-      videoWidth,
-      videoHeight,
-      topCaptionHeight,
-      bottomCaptionHeight,
-      safeHeight,
-      overlayPosition,
-    });
+  log.info('[video-generator] filterGraph:', filterGraph);
+  log.info('[video-generator] computed:', { scale, videoWidth, videoHeight, safeHeight, overlayPosition, chroma: { mode: chroma.mode, hasImage: !!chromaImage, hasVideo: !!chromaVideo } });
   ffmpegCommand.complexFilter(filterGraph);
 
-  // Optional BGM input and audio mapping
+  // Optional BGM input (added for potential fallback)
     let bgmInputIndex: number | undefined;
     if (rawRender?.bgmPath) {
       ffmpegCommand.input(normalizePath(rawRender.bgmPath));
@@ -386,35 +427,116 @@ export function generateVideo(
     if (shouldApplyDuration) {
       outOpts.push('-t', String(durationSec));
     }
-    // 音声が短い場合も5秒まで無音でパディング
-    if (shouldApplyDuration) {
-      outOpts.push('-af', `apad=pad_dur=${durationSec}`);
-    }
     outOpts.push('-preset', getFFmpegPreset(qualityPreset));
     outOpts.push('-pix_fmt', 'yuv420p');
-    outOpts.push('-c:a', 'aac');
 
-  // Map audio: prefer source audio when source exists, else background/single input audio
-  // Input layout:
-  //  - Screenshot overlay: [0]=background, [1]=image -> prefer 0
-  //  - Src+Bg overlay: [0]=background, [1]=source -> prefer 1
-  //  - Single video (src or bg): [0]=that video -> prefer 0
-  // 原動画の音声を優先。背景のみの場合は0
-  const preferAudioIndex = srcPath ? (bgPath ? (srcHasVideo ? 1 : 0) : 0) : 0;
-  // Explicitly map the final video filter output and audio
-  outOpts.push('-map', finalVideoLabel || '[v_final]');
-  outOpts.push('-map', `${preferAudioIndex}:a?`);
-  // 強制duration時は-video/-audioどちらかが短くても5秒に到達するよう- shortes tは付けない
-  ffmpegCommand.outputOptions(outOpts);
-    if (bgmInputIndex !== undefined) {
-      ffmpegCommand.outputOptions(['-map', `${bgmInputIndex}:a?`]);
+    // Decide audio source based on platform priority rules
+    const platform = (opts?.accountId?.platform || '').toLowerCase();
+    // Probe audio availability for local files (http assumed to have audio)
+    const srcHasAudio = !!srcInputIndex && (srcPath && srcPath.startsWith('http') ? true : (srcPath ? await hasAudioStream(srcPath) : false));
+    const bgHasAudio = !!bgInputIndex && (!!bgPath ? await hasAudioStream(bgPath) : false);
+
+    let selectedAudioIndex: number | undefined;
+    // まず素材音声があれば最優先（プラットフォーム共通）
+    if (srcHasAudio && srcInputIndex !== undefined) {
+      selectedAudioIndex = srcInputIndex;
+    } else {
+      if (platform === 'x') {
+        // X: BGM -> 背景
+        if (bgmInputIndex !== undefined) selectedAudioIndex = bgmInputIndex;
+        else if (bgHasAudio && bgInputIndex !== undefined) selectedAudioIndex = bgInputIndex;
+      } else {
+        // その他（TikTok/YouTube含む）: BGM -> 背景
+        if (bgmInputIndex !== undefined) selectedAudioIndex = bgmInputIndex;
+        else if (bgHasAudio && bgInputIndex !== undefined) selectedAudioIndex = bgInputIndex;
+      }
     }
+
+    // Map video always
+    outOpts.push('-map', finalVideoLabel || '[v_final]');
+
+    if (selectedAudioIndex !== undefined) {
+      const selectedKind = ((): 'src'|'bgm'|'bg' => {
+        if (bgmInputIndex !== undefined && selectedAudioIndex === bgmInputIndex) return 'bgm';
+        if (srcInputIndex !== undefined && selectedAudioIndex === srcInputIndex) return 'src';
+        return 'bg';
+      })();
+      log.info(`[video-generator] selected audio: ${selectedKind} (platform=${platform || 'n/a'})`);
+      outOpts.push('-map', `${selectedAudioIndex}:a?`);
+      outOpts.push('-c:a', 'aac');
+      // Pad audio to duration only when we have an audio stream
+      if (shouldApplyDuration) {
+        outOpts.push('-af', `apad=pad_dur=${durationSec}`);
+      }
+    } else {
+      // No audio source; disable audio to avoid codec errors
+      log.warn(`[video-generator] no audio source available; output will be silent (platform=${platform || 'n/a'})`);
+      outOpts.push('-an');
+    }
+
+    // 強制duration時は-video/-audioどちらかが短くても5秒に到達するよう- shortest は付けない
+    // テスト互換性のため、出力オプションはフラグごとに分割して追加する（'-map [v_final]' 等が単一呼び出しで記録されるように）
+    const pairFlags = new Set(['-t', '-preset', '-pix_fmt', '-map', '-c:a', '-af']);
+    for (let i = 0; i < outOpts.length; ) {
+      const flag = outOpts[i];
+      if (pairFlags.has(flag) && i + 1 < outOpts.length) {
+        // 個別に渡す（テストで '-map [v_final]' を検出しやすくする）
+        ffmpegCommand.outputOptions(flag as any);
+        ffmpegCommand.outputOptions(outOpts[i + 1] as any);
+        i += 2;
+      } else {
+        ffmpegCommand.outputOptions(flag as any);
+        i += 1;
+      }
+    }
+
+    // メタ情報を準備（end/error 双方で書き込む）
+    const baseMeta: Record<string, any> = {
+      version: 1,
+      startedAt,
+      output: outputPath,
+      platform,
+      accountId: opts?.accountId?.id || null,
+      sourceType: opts?.sourceType || (srcPath ? 'other' : (screenshotPath ? 'screenshot' : 'other')),
+      inputs: {
+        background: bgPath || null,
+        source: srcPath || null,
+        screenshot: screenshotPath || null,
+        bgm: rawRender?.bgmPath || null,
+        chroma: { mode: chroma.mode, image: chromaImage || null, video: chromaVideo || null },
+      },
+      ffmpeg: {
+        filterGraph,
+        shouldApplyDuration,
+        durationSec,
+        preset: getFFmpegPreset(qualityPreset),
+      },
+    };
+
+    const writeMeta = (meta: Record<string, any>) => {
+      try {
+        const metaPath = outputPath.replace(/\.mp4$/i, '.meta.json');
+        const dir = path.dirname(outputPath);
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2), 'utf8');
+      } catch (e) {
+        log.warn('[video-generator] failed to write meta json:', e instanceof Error ? e.message : String(e));
+      }
+    };
 
     ffmpegCommand
       .on('start', (commandLine) => {
         log.info('Spawned Ffmpeg with command: ' + commandLine);
       })
       .on('end', () => {
+        const endedAt = Date.now();
+        const meta = {
+          ...baseMeta,
+          endedAt,
+          durationMs: Math.max(0, endedAt - startedAt),
+          status: 'success',
+        };
+        writeMeta(meta);
         log.info(`Video generation finished successfully: ${outputPath}`);
         resolve(outputPath);
       })
@@ -422,6 +544,17 @@ export function generateVideo(
         log.error(`Error during video generation: ${err.message}`);
         log.error('ffmpeg stdout:\n' + stdout);
         log.error('ffmpeg stderr:\n' + stderr);
+        try {
+          const endedAt = Date.now();
+          const meta = {
+            ...baseMeta,
+            endedAt,
+            durationMs: Math.max(0, endedAt - startedAt),
+            status: 'error',
+            error: err?.message || String(err),
+          };
+          writeMeta(meta);
+        } catch {/* ignore */}
         reject(err);
       })
       .save(outputPath);

@@ -4,7 +4,6 @@ import { app, BrowserWindow } from 'electron';
 import path from 'path';
 import fs from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import * as keytar from 'keytar';
 import os from 'node:os';
 import { restoreCookies } from '../auth-utils';
 import { execFile, spawn } from 'node:child_process';
@@ -12,9 +11,24 @@ import { promisify } from 'node:util';
 import ffmpegStatic from 'ffmpeg-static';
 const execFileAsync = promisify(execFile);
 
-// Fixed absolute screenshot root (requested): all X screenshot I/O will use only this directory
-// Note: Proper Windows absolute path with drive letter and escaped backslashes
-const SCREENSHOT_ROOT = 'C:\\Users\\i0swi\\OneDrive\\デスクトップ\\dougadownload\\screenshot';
+// Cross-platform screenshot root resolver for X backend
+function getScreenshotRoot(): string {
+  try {
+    // Prefer an OS-safe user directory. On Windows, historically a Desktop path was used; we preserve it if exists.
+    if (process.platform === 'win32') {
+      const legacy = 'C:\\\\Users\\\\i0swi\\\\OneDrive\\\\デスクトップ\\\\dougadownload\\\\screenshot';
+      if (existsSync(legacy)) return legacy;
+      // Fallback to Pictures/dougadownload/screenshot
+      return path.join(app.getPath('pictures'), 'dougadownload', 'screenshot');
+    }
+    // macOS/Linux: use Pictures/dougadownload/screenshot
+    return path.join(app.getPath('pictures'), 'dougadownload', 'screenshot');
+  } catch {
+    // Last resort: userData under app container
+    try { return path.join(app.getPath('userData'), 'screenshots'); } catch { /* ignore */ }
+  }
+  return path.join(process.cwd(), 'screenshots');
+}
 
 // Helper: get a ready-to-use YtDlp client (ensures binary + ffmpeg configured)
 export async function getYtdlpClient(): Promise<{ yt: any, binPath?: string }> {
@@ -96,6 +110,13 @@ function getPlatformUrl(platform: Platform, accountId: string): string {
 async function createCookieFileIfAny(platform: Platform): Promise<string | undefined> {
   if (platform !== 'youtube' && platform !== 'tiktok') return undefined;
   try {
+    // keytar may be unavailable on some systems; load dynamically and continue without cookies if it fails
+    let keytar: any = null;
+    try { keytar = await import('keytar'); } catch { keytar = null; }
+    if (!keytar) {
+      log.info(`[scraper:${platform}] keytar not available; proceeding without cookies.`);
+      return undefined;
+    }
     const raw = await keytar.getPassword(APP, platform);
     if (!raw) {
       log.info(`[scraper:${platform}] No raw credentials found in keystore.`);
@@ -141,7 +162,7 @@ async function runScreenshotGrab(user: string, count: number): Promise<void> {
   const candCwd = path.join(process.cwd(), 'screenshot', 'bin', 'grab.cjs');
   const candApp = path.join(appPath, 'screenshot', 'bin', 'grab.cjs');
   const script = existsSync(candCwd) ? candCwd : candApp;
-  const outBase = path.join(SCREENSHOT_ROOT, 'out', 'screenshots');
+  const outBase = path.join(getScreenshotRoot(), 'out', 'screenshots');
   try { await fs.mkdir(outBase, { recursive: true }); } catch { /* ignore */ }
   await new Promise<void>((resolve) => {
   // Use packaged local browsers shipped under node_modules/playwright-core/.local-browsers by setting to '0'
@@ -168,7 +189,7 @@ async function runScreenshotGrab(user: string, count: number): Promise<void> {
 export async function scrapeX(accountId: string): Promise<string | null> {
   // Force using screenshot subapp runner only
   const acctSan = accountId.startsWith('@') ? accountId.substring(1) : accountId;
-  const userOutDir = path.join(SCREENSHOT_ROOT, 'out', 'screenshots', acctSan);
+  const userOutDir = path.join(getScreenshotRoot(), 'out', 'screenshots', acctSan);
   try { await fs.mkdir(userOutDir, { recursive: true }); } catch { /* ignore */ }
   try {
     await runScreenshotGrab(acctSan, 1);
@@ -366,12 +387,12 @@ export async function listRecentItems(platform: Platform, accountId: string, lim
 async function listRecentItemsX_viaBackend(accountId: string, limit: number, sinceCursor?: string): Promise<ListedItem[]> {
   const results: ListedItem[] = [];
   try {
-    const acctSan = accountId.startsWith('@') ? accountId.substring(1) : accountId;
+  const acctSan = accountId.startsWith('@') ? accountId.substring(1) : accountId;
     // Run backend grabber for requested limit
     await runScreenshotGrab(acctSan, Math.max(1, limit));
   // 小さな待機: 書き込み完了待ち（稀にgrab直後はディレクトリ一覧に反映されないことがある）
   try { await new Promise(r => setTimeout(r, 700)); } catch { /* ignore */ }
-    const userOutDir = path.join(SCREENSHOT_ROOT, 'out', 'screenshots', acctSan);
+  const userOutDir = path.join(getScreenshotRoot(), 'out', 'screenshots', acctSan);
     const names = await fs.readdir(userOutDir).catch(() => [] as string[]);
     log.info(`[x:${accountId}] listRecentItemsX_viaBackend: dir=${userOutDir} names=${names.length}`);
     const files = await Promise.all(names
@@ -399,7 +420,7 @@ async function listRecentItemsX_viaBackend(accountId: string, limit: number, sin
         // Prefer full playwright (bundled in devDeps). If not present, this require will throw.
         // eslint-disable-next-line @typescript-eslint/no-var-requires
         const { chromium } = require('playwright');
-        const storageStatePath = path.join(SCREENSHOT_ROOT, '.auth', 'x.storage.json');
+  const storageStatePath = path.join(getScreenshotRoot(), '.auth', 'x.storage.json');
         const browser = await (chromium as any).launch({ headless: true });
         const context = await browser.newContext({
           storageState: storageStatePath,
@@ -447,7 +468,7 @@ async function listRecentItemsX_viaBackend(accountId: string, limit: number, sin
         try {
           const runner = path.join(process.cwd(), 'scripts', 'run-screenshot-grab.cjs');
           const nodeCmd = process.platform === 'win32' ? 'node.exe' : 'node';
-          const baseOut = path.join(SCREENSHOT_ROOT, 'out', 'screenshots');
+          const baseOut = path.join(getScreenshotRoot(), 'out', 'screenshots');
           await new Promise<void>((resolve) => {
             const child = spawn(nodeCmd, [runner, '--user', acctSan, '--count', String(Math.max(1, limit)), '--outDir', baseOut], { cwd: process.cwd(), stdio: ['ignore', 'pipe', 'pipe'], shell: false });
             child.stdout?.on('data', (d) => { try { log.info('[screenshot-cli]', d.toString().trim()); } catch {} });

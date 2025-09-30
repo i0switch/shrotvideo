@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "commonjs",
+    "outDir": "dist/preload",
+    "types": ["node", "electron"]
+  },
+  "include": ["app/preload/**/*.ts"]
+}

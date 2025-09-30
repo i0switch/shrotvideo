@@ -28,6 +28,8 @@
     "run:batch": "node ./dist/electron/electron/tools/generate-batch-accounts.js",
     "start:prod": "npm run build:renderer && npm run build:electron && npx cross-env NODE_ENV=production npx electron .",
     "test:autorun": "npm run build:renderer && npm run build:electron && npx cross-env RUN_TEST_ON_START=1 RUN_TEST_EXIT=1 NODE_ENV=production npx electron .",
+  "start:prod:run": "npx cross-env NODE_ENV=production npx electron .",
+  "test:autorun:fast": "npx cross-env RUN_TEST_ON_START=1 RUN_TEST_EXIT=1 NODE_ENV=production npx electron .",
     "gemini:spec": "node scripts/gemini.cjs spec",
     "gemini:generate": "node scripts/gemini.cjs generate",
     "gemini:all": "node scripts/gemini.cjs all",

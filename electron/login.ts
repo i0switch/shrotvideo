@@ -1,6 +1,5 @@
 import { ipcMain, BrowserWindow, session } from 'electron';
 import type { Cookie } from 'electron';
-import * as keytar from 'keytar';
 import log from 'electron-log';
 import { saveCookies, clearCookies } from './auth-utils';
 
@@ -56,6 +55,10 @@ const PLATFORM_SETTINGS: Record<Platform, {
 
 export async function hasSavedCookies(platform: Platform): Promise<boolean> {
   try {
+    // keytar may be unavailable on some systems; load dynamically
+    let keytar: any = null;
+    try { keytar = await import('keytar'); } catch { keytar = null; }
+    if (!keytar) return false;
     const raw = await keytar.getPassword(APP, platform);
     if (!raw) return false;
     const jar = JSON.parse(raw) as Array<Cookie>;

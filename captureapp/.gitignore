@@ -1,0 +1,45 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+/dist/
+/release/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# Tests (artifacts)
+/test-results/
+/coverage/
+/playwright-report/
+/.nyc_output/
+
+# Caches
+/.cache/
+/.vite/
+.eslintcache
+.playwright/
+.vscode-test/
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Local config / secrets
+.env
+.env.*
+storageState.json
+
+# Outputs: keep results but avoid large per-run reports in VCS
+outputs/**/_reports/
+
+# TypeScript incremental build info
+*.tsbuildinfo
+
+# Editor
+.vscode/
+.idea/

@@ -14,20 +14,36 @@ import fs from 'node:fs/promises';
 import { existsSync as existsSyncFS, mkdirSync } from 'node:fs';
 // import { fileURLToPath } from 'url';
 import Store from 'electron-store';
-import type { AppSettings } from '../src/core/settings.js';
+import type { AppSettings, WatchedFolder } from '../src/core/settings.js';
 import { JobManager } from './job-manager.js';
 import log from 'electron-log';
 import type { LogMessage } from 'electron-log';
-import * as keytar from 'keytar'; // Add this line
+// keytar may be unavailable on some systems; load dynamically when needed
+let _keytarPromise: Promise<any> | null = null;
+async function getKeytar(): Promise<any | null> {
+  if (!_keytarPromise) {
+    _keytarPromise = import('keytar').catch(() => null);
+  }
+  return _keytarPromise;
+}
 import { generateVideo } from './tasks/video-generator.js';
 import { scrapeX, listRecentItems } from './tasks/scraper.js'; // Add this line
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 
 // Configure logger
 log.initialize();
 log.transports.file.level = 'debug';
 // Offscreen capture stability on some Windows setups
 try { app.disableHardwareAcceleration(); } catch { /* ignore */ }
+// Reduce Chromium disk cache errors on restricted paths (e.g., OneDrive Desktop)
+try {
+  const cacheDir = path.join(app.getPath('userData'), 'Cache');
+  try { mkdirSync(cacheDir, { recursive: true }); } catch { /* ignore */ }
+  app.commandLine.appendSwitch('disk-cache-dir', cacheDir);
+  // Avoid GPU shader disk cache errors in headless-ish CI / autorun
+  app.commandLine.appendSwitch('disable-gpu-shader-disk-cache');
+} catch { /* ignore */ }
 // Duplicate logs to JSONL file and forward to renderer
 let jsonlPath: string | null = null;
 const ensureJsonlPath = async () => {
@@ -46,6 +62,24 @@ let mainWindow: BrowserWindow | null = null;
 let diagTimer: NodeJS.Timeout | null = null;
 let lastDiagEnabled = false;
 let lastDiagIntervalMs = 0;
+
+// Ensure single instance (avoids double main process and duplicate log forwarding)
+const singleLock = (() => {
+  try { return app.requestSingleInstanceLock(); } catch { return true; }
+})();
+if (!singleLock) {
+  try { app.quit(); } catch { /* ignore */ }
+}
+try {
+  app.on('second-instance', () => {
+    try {
+      if (mainWindow) {
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.focus();
+      }
+    } catch { /* ignore */ }
+  });
+} catch { /* ignore */ }
 
 // Ensure Playwright Chromium browser is installed (idempotent). Install into userData\ms-playwright.
 async function ensurePlaywrightInstalled(): Promise<void> {
@@ -96,9 +130,20 @@ async function ensurePlaywrightInstalled(): Promise<void> {
   }
 }
 
-// Fixed absolute screenshot root (requested): all X screenshot I/O will use only this directory
-// Note: Use a proper Windows absolute path with a drive letter and escaped backslashes.
-const SCREENSHOT_ROOT = 'C:\\Users\\i0swi\\OneDrive\\デスクトップ\\dougadownload\\screenshot';
+// Cross-platform screenshot root resolver for X backend
+function getScreenshotRoot(): string {
+  try {
+    if (process.platform === 'win32') {
+      const legacy = 'C:\\Users\\i0swi\\OneDrive\\デスクトップ\\dougadownload\\screenshot';
+      try { if (existsSyncFS(legacy)) return legacy; } catch { /* ignore */ }
+      try { return path.join(app.getPath('pictures'), 'dougadownload', 'screenshot'); } catch { /* ignore */ }
+    } else {
+      try { return path.join(app.getPath('pictures'), 'dougadownload', 'screenshot'); } catch { /* ignore */ }
+    }
+  } catch { /* ignore */ }
+  try { return path.join(app.getPath('userData'), 'screenshots'); } catch { /* ignore */ }
+  return path.join(process.cwd(), 'screenshots');
+}
 
 // Strict helpers for electron-store access
 function getAllSettings(): AppSettings {
@@ -117,6 +162,9 @@ const store = new Store<AppSettings>({
       diagnosticLogging: false,
       diagnosticIntervalSec: 10,
       initialBackfillCount: 3,
+      watchedFolders: [],
+      watchedFoldersRetentionHours: 24,
+      watchedFoldersMaxCache: 2000,
     },
     platforms: {
       x: {
@@ -146,20 +194,9 @@ const store = new Store<AppSettings>({
       durationSec: 15,
       bgmPath: '',
       backgroundVideoPath: '',
-      fontFilePath: '',
-      captions: {
-        top: '',
-        bottom: '',
-      },
       scale: 0.8,
-      teleTextBg: '#000000',
       qualityPreset: 'standard',
       overlayPosition: 'center',
-      topCaptionHeight: 120, // Default from GEMINI.md example
-      bottomCaptionHeight: 160, // Default from GEMINI.md example
-      captionBgOpacity: 1.0, // Default from GEMINI.md example (black@1.0)
-      topCaptionPosition: 'center',
-      bottomCaptionPosition: 'center',
     },
   },
 });
@@ -203,16 +240,179 @@ try {
 
 const jobManager = new JobManager(store);
 
-// Forward logs to renderer and write JSONL in parallel
-Object.assign(console, log.functions);
+// ===== Watched Folder Manager =====
+class FolderWatchManager {
+  private timers: Map<string, NodeJS.Timeout> = new Map();
+  private inFlight: Set<string> = new Set();
+  private processed: Map<string, number> = new Map(); // key=fileKey, value=ts
+
+  constructor(private getSettings: () => AppSettings) {}
+
+  private hash(s: string): string {
+    try { return createHash('md5').update(s).digest('hex'); } catch { return s; }
+  }
+
+  private fileKey(folderPath: string, file: { name: string; size: number; mtimeMs: number }): string {
+    return `${folderPath}|${file.name}|${file.size}|${Math.floor(file.mtimeMs)}`;
+  }
+
+  private isVideoOrImage(name: string): boolean {
+    const n = name.toLowerCase();
+    return n.endsWith('.mp4') || n.endsWith('.mov') || n.endsWith('.mkv') || n.endsWith('.webm') ||
+           n.endsWith('.avi') || n.endsWith('.png') || n.endsWith('.jpg') || n.endsWith('.jpeg') || n.endsWith('.webp');
+  }
+
+  private cleanupTTL(now: number) {
+    const s = this.getSettings();
+    const ttlH = Math.max(1, Number(s.general.watchedFoldersRetentionHours || 24));
+    const TTL = ttlH * 60 * 60 * 1000;
+    for (const [k, ts] of this.processed.entries()) {
+      if (now - ts > TTL) this.processed.delete(k);
+    }
+    // size guard
+    const max = Math.max(100, Number(s.general.watchedFoldersMaxCache || 2000));
+    if (this.processed.size > max) {
+      // drop oldest entries
+      const arr = [...this.processed.entries()].sort((a,b) => a[1]-b[1]);
+      for (let i = 0; i < arr.length - max; i++) this.processed.delete(arr[i][0]);
+    }
+  }
+
+  public reschedule() {
+    // clear existing
+    for (const t of this.timers.values()) clearInterval(t);
+    this.timers.clear();
+    const s = this.getSettings();
+    const list = s.general.watchedFolders || [];
+    for (const f of list) {
+      if (!f?.isActive || !f?.path) continue;
+      const minutes = Math.max(1, Number(f.intervalMinutes || 5));
+      const key = f.path;
+      const runner = async () => {
+        await this.scanOnce(f).catch((e) => { try { log.warn('[folder-watch] scan error:', (e as Error)?.message || String(e)); } catch {} });
+      };
+      // kickoff immediately and then schedule
+      void runner();
+      const timer = setInterval(runner, minutes * 60 * 1000);
+      this.timers.set(key, timer);
+      log.info(`[folder-watch] scheduled: ${f.path} every ${minutes}m`);
+    }
+  }
+
+  private async listFiles(dir: string, includeSub: boolean): Promise<Array<{ name: string; size: number; mtimeMs: number; abs: string }>> {
+    let out: Array<{ name: string; size: number; mtimeMs: number; abs: string }>= [];
+    let names: string[] = [];
+    try { names = await fs.readdir(dir); } catch { return out; }
+    for (const name of names) {
+      const abs = path.join(dir, name);
+      try {
+        const st = await fs.stat(abs);
+        if (st.isDirectory()) {
+          if (includeSub) {
+            const inner = await this.listFiles(abs, includeSub);
+            out = out.concat(inner);
+          }
+        } else if (st.isFile() && this.isVideoOrImage(name)) {
+          out.push({ name: path.relative(dir, abs), size: st.size, mtimeMs: st.mtimeMs, abs });
+        }
+      } catch { /* ignore */ }
+    }
+    return out;
+  }
+
+  private async scanOnce(folder: WatchedFolder) {
+    const s = this.getSettings();
+    const dir = folder.path;
+    // list files (with optional recursion)
+    let files: Array<{ name: string; size: number; mtimeMs: number; abs: string }> = [];
+    try {
+      files = await this.listFiles(dir, !!folder.includeSubfolders);
+    } catch (e) {
+      log.warn('[folder-watch] readdir failed:', (e as Error)?.message || String(e));
+      return;
+    }
+    files.sort((a,b) => a.mtimeMs - b.mtimeMs);
+    const now = Date.now();
+    this.cleanupTTL(now);
+    for (const f of files) {
+      const k = this.fileKey(dir, { name: f.name, size: f.size, mtimeMs: f.mtimeMs });
+      if (this.processed.has(k)) continue;
+      const abs = f.abs;
+      const inflight = this.hash(k);
+      if (this.inFlight.has(inflight)) continue;
+      this.inFlight.add(inflight);
+      try {
+        const isImage = /\.(png|jpg|jpeg|webp)$/i.test(f.name);
+        const accountOpt = undefined; // not tied to a platform account
+        const settingsClone: AppSettings = JSON.parse(JSON.stringify(s));
+        // apply folder chroma settings via a small wrapper around generateVideo options
+        const out = await (async () => {
+          if (isImage) {
+            // Use background video from settings and overlay image like X screenshot path
+            return await generateVideo(abs, settingsClone, undefined, { accountId: accountOpt, folderChroma: {
+              mode: folder.chromaMode || 'none', image: folder.chromaImagePath, video: folder.chromaVideoPath,
+            }} as any);
+          } else {
+            // Video: treat as source video
+            return await generateVideo('', settingsClone, abs, { accountId: accountOpt, folderChroma: {
+              mode: folder.chromaMode || 'none', image: folder.chromaImagePath, video: folder.chromaVideoPath,
+            }} as any);
+          }
+        })();
+        log.info('[folder-watch] processed:', abs, '->', out);
+        this.processed.set(k, now);
+      } catch (e) {
+        log.warn('[folder-watch] process failed:', (e as Error)?.message || String(e));
+      } finally {
+        this.inFlight.delete(inflight);
+      }
+    }
+  }
+}
+
+const folderWatchManager = new FolderWatchManager(() => getAllSettings());
+
+// Forward logs to renderer and write JSONL in parallel (guard against double install)
+const GLOBAL_HOOK_KEY = Symbol.for('sv.log.forwarder.installed');
+const GLOBAL_DEDUPE_KEY = Symbol.for('sv.log.forwarder.dedupe');
+const gAny = globalThis as unknown as Record<PropertyKey, unknown>;
+// Install console redirect once
+if (!gAny[GLOBAL_HOOK_KEY]) {
+  gAny[GLOBAL_HOOK_KEY] = true;
+  Object.assign(console, log.functions);
+}
+// Shared short-term dedupe cache across potential re-imports
+const sendCache: Map<string, number> = (gAny[GLOBAL_DEDUPE_KEY] as Map<string, number>) || new Map<string, number>();
+gAny[GLOBAL_DEDUPE_KEY] = sendCache;
+
 const hookFn = (message: LogMessage): LogMessage => {
   // Forward to renderer UI
   try {
     if (mainWindow && mainWindow.webContents) {
       const text = Array.isArray(message.data) ? (message.data as unknown[]).map(String).join(' ') : '';
-      const ts = message.date instanceof Date ? message.date.toISOString() : '';
-      const lv = (message as unknown as { level?: string }).level ?? 'info';
-      mainWindow.webContents.send('log-message', `${ts} [${lv}] ${text}`);
+      const ts = message.date instanceof Date ? message.date : new Date();
+      const tsJ = ts.toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo', hour12: false });
+      const lv = String((message as unknown as { level?: string }).level ?? 'info');
+      const jp = lv === 'error' ? 'エラー' : lv === 'warn' ? '警告' : lv === 'debug' ? 'デバッグ' : lv === 'verbose' ? '詳細' : '情報';
+      const out = `${tsJ} [${jp}] ${text}`;
+      // De-duplicate identical lines within a short time window to avoid triple prints
+      try {
+        const now = Date.now();
+        const last = sendCache.get(out) || 0;
+        // 500ms window; adjust if needed
+        if (now - last < 500) {
+          return message;
+        }
+        sendCache.set(out, now);
+        // trim cache to avoid unbounded growth
+        if (sendCache.size > 1000) {
+          const cutoff = now - 60_000;
+          for (const [k, v] of sendCache) {
+            if (v < cutoff) sendCache.delete(k);
+          }
+        }
+      } catch { /* ignore */ }
+      mainWindow.webContents.send('log-message', out);
     }
   } catch {
     // ignore
@@ -237,7 +437,12 @@ const hookFn = (message: LogMessage): LogMessage => {
   }
   return message; // return original message for hooks chain
 };
-log.hooks.push(hookFn);
+// Ensure we push our hook only once
+const GLOBAL_PUSH_KEY = Symbol.for('sv.log.forwarder.hookpushed');
+if (!gAny[GLOBAL_PUSH_KEY]) {
+  log.hooks.push(hookFn);
+  gAny[GLOBAL_PUSH_KEY] = true;
+}
 
 
 
@@ -261,14 +466,18 @@ function setupIpcHandlers() {
     return getAllSettings();
   });
 
-  // Accept best-effort log messages from renderer (fire-and-forget)
-  ipcMain.on('log-message', (_e, payload: unknown) => {
+  // Accept best-effort log messages from renderer (fire-and-forget). Avoid duplicate handler.
+  const GLOBAL_IPC_LOG_KEY = Symbol.for('sv.ipc.log-message.handler');
+  if (!(gAny[GLOBAL_IPC_LOG_KEY] as boolean)) {
+    ipcMain.on('log-message', (_e, payload: unknown) => {
     try {
       log.info(String(payload));
     } catch {
       // swallow
     }
-  });
+    });
+    gAny[GLOBAL_IPC_LOG_KEY] = true;
+  }
 
   // Logs: return log file path
   ipcMain.handle('logs.file', async () => {
@@ -322,6 +531,9 @@ function setupIpcHandlers() {
     setSettingsPatch(settings);
     // 診断ログの再スケジュール
     try { scheduleDiagnostics(); } catch { /* swallow */ }
+    // Watched folder re-schedule
+    try { folderWatchManager.reschedule(); } catch { /* swallow */ }
+    try { return getAllSettings(); } catch { return null; }
   });
 
   ipcMain.handle('open-directory-dialog', async () => {
@@ -348,6 +560,11 @@ function setupIpcHandlers() {
   // New: Credential Management Handlers
   ipcMain.handle('set-credential', async (_event, service: string, account: string, password: string) => {
     try {
+      const keytar = await getKeytar();
+      if (!keytar) {
+        log.warn(`[credentials] keytar not available; cannot set credential for ${service}/${account}`);
+        return false;
+      }
       await keytar.setPassword(service, account, password);
       log.info(`Credential set for service: ${service}, account: ${account}`);
       return true;
@@ -360,6 +577,11 @@ function setupIpcHandlers() {
 
   ipcMain.handle('get-credential', async (_event, service: string, account: string) => {
     try {
+      const keytar = await getKeytar();
+      if (!keytar) {
+        log.warn(`[credentials] keytar not available; cannot get credential for ${service}/${account}`);
+        return null;
+      }
       const password = await keytar.getPassword(service, account);
       log.info(`Credential retrieved for service: ${service}, account: ${account}`);
       return password;
@@ -372,6 +594,11 @@ function setupIpcHandlers() {
 
   ipcMain.handle('delete-credential', async (_event, service: string, account: string) => {
     try {
+      const keytar = await getKeytar();
+      if (!keytar) {
+        log.warn(`[credentials] keytar not available; cannot delete credential for ${service}/${account}`);
+        return false;
+      }
       const result = await keytar.deletePassword(service, account);
       log.info(`Credential deleted for service: ${service}, account: ${account}. Result: ${result}`);
       return result;
@@ -420,6 +647,28 @@ function setupIpcHandlers() {
   });
 
   ipcMain.handle('get-status', () => jobManager.getStatus());
+  // Watched folder manager controls
+  ipcMain.handle('folders.get', () => {
+    try {
+      const s = getAllSettings();
+      return s.general.watchedFolders || [];
+    } catch { return [] as WatchedFolder[]; }
+  });
+  ipcMain.handle('folders.set', (_e, folders: WatchedFolder[]) => {
+    try {
+      const s = getAllSettings();
+      const next = { ...s, general: { ...s.general, watchedFolders: Array.isArray(folders) ? folders : [] } } as AppSettings;
+      setSettingsPatch(next as Partial<AppSettings>);
+      // reschedule folder watchers
+      try { folderWatchManager.reschedule(); } catch { /* ignore */ }
+      return true;
+    } catch { return false; }
+  });
+  ipcMain.handle('folders.status', () => {
+    try {
+      return { timers: [...folderWatchManager['timers'].keys()].length };
+    } catch { return { timers: 0 }; }
+  });
   // 互換API: 簡易ステータス（renderer.d.ts の IElectronAPI.getStatus に合わせる）
   ipcMain.handle('get-status-simple', () => {
     const full = jobManager.getStatus() as unknown as {
@@ -562,6 +811,21 @@ const createWindow = () => {
     },
   });
 
+  // Observe renderer console and load lifecycle for debugging white screen
+  try {
+    mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+      try { log.info('[renderer:console]', String(level), String(message)); } catch {}
+    });
+    mainWindow.webContents.on('did-finish-load', () => {
+      try { log.info('[renderer:lifecycle] did-finish-load'); } catch {}
+    });
+    mainWindow.webContents.on('did-fail-load', (_ev, errorCode, errorDescription, validatedURL, isMainFrame) => {
+      try {
+        log.error('[renderer:lifecycle] did-fail-load', { errorCode, errorDescription, validatedURL, isMainFrame });
+      } catch {}
+    });
+  } catch { /* ignore */ }
+
   // and load the index.html of the app.
   // Vite DEV server URL
   const devServerURL = 'http://127.0.0.1:5173';
@@ -617,6 +881,7 @@ app.on('ready', async () => {
   }
   setupIpcHandlers();
   try { scheduleDiagnostics(); } catch { /* ignore */ }
+  try { folderWatchManager.reschedule(); } catch { /* ignore */ }
 
   // Ensure Playwright browser is present (first-run install). Await to avoid race with X capture.
   try {
@@ -655,7 +920,7 @@ app.on('ready', async () => {
   if (true /* usePW forced */) {
           // Build output directory under fixed SCREENSHOT_ROOT/out/screenshots/<account>
           const acctSan = account.startsWith('@') ? account.substring(1) : account;
-          const fixedBase = path.join(SCREENSHOT_ROOT, 'out', 'screenshots', acctSan);
+          const fixedBase = path.join(getScreenshotRoot(), 'out', 'screenshots', acctSan);
           try { mkdirSync(fixedBase, { recursive: true }); } catch { /* ignore */ }
           outDir = fixedBase;
           log.info('[auto-capture] Start: account=' + account + ' limit=' + limit + ' out=' + outDir);
@@ -665,7 +930,7 @@ app.on('ready', async () => {
             // eslint-disable-next-line @typescript-eslint/no-var-requires
             const { chromium } = require('playwright');
             // Use only fixed screenshot auth storage
-            const storageStatePath = path.join(SCREENSHOT_ROOT, '.auth', 'x.storage.json');
+            const storageStatePath = path.join(getScreenshotRoot(), '.auth', 'x.storage.json');
             const browser = await chromium.launch({ headless: true });
             const context = await browser.newContext({
               storageState: storageStatePath,
@@ -768,7 +1033,10 @@ app.on('ready', async () => {
 
   // Optional: Run a one-off test across all accounts on start and save logs into workspace for inspection
   try {
-    const runTestOnStart = process.env.RUN_TEST_ON_START === '1';
+    const runTestOnStart = process.env.RUN_TEST_ON_START === '1' && process.env.NODE_ENV !== 'development';
+    if (process.env.RUN_TEST_ON_START === '1' && process.env.NODE_ENV === 'development') {
+      log.info('[auto-run] skipping because NODE_ENV=development');
+    }
     if (runTestOnStart) {
       const ts = Date.now();
       // Save under workspace root if available, else under userData
@@ -790,7 +1058,16 @@ app.on('ready', async () => {
           intervalMinutes: s.platforms.x?.intervalMinutes ?? 15,
           scrapeDelayMs: s.platforms.x?.scrapeDelayMs ?? 5000,
           accounts: [
-      { id: 'Mountain_cb', isActive: true, backfillRemaining: 0, processedIds: [], lastCursor: '' },
+      {
+        id: 'Mountain_cb',
+        isActive: true,
+        backfillRemaining: 0,
+        processedIds: [],
+        lastCursor: '',
+        chromaMode: 'image',
+        // per-account 画像クロマ素材を明示（既定と同じでも選択経路を検証可能）
+        chromaImagePath: path.join(process.cwd(), 'kuroma.png'),
+      },
           ],
         } as any;
         next.platforms.tiktok = {
@@ -798,7 +1075,16 @@ app.on('ready', async () => {
           intervalMinutes: s.platforms.tiktok?.intervalMinutes ?? 15,
           scrapeDelayMs: s.platforms.tiktok?.scrapeDelayMs ?? 5000,
           accounts: [
-            { id: 'sonnawakenai.ai', isActive: true, backfillRemaining: 0, processedIds: [], lastCursor: '' },
+            {
+              id: 'sonnawakenai.ai',
+              isActive: true,
+              backfillRemaining: 0,
+              processedIds: [],
+              lastCursor: '',
+              chromaMode: 'video',
+              // per-account 動画クロマ素材を明示（既定と同じでも選択経路を検証可能）
+              chromaVideoPath: path.join(process.cwd(), 'kuroma.mp4'),
+            },
           ],
         } as any;
         next.platforms.youtube = {
@@ -806,7 +1092,7 @@ app.on('ready', async () => {
           intervalMinutes: s.platforms.youtube?.intervalMinutes ?? 15,
           scrapeDelayMs: s.platforms.youtube?.scrapeDelayMs ?? 5000,
           accounts: [
-            { id: 'BMYuya', isActive: true, backfillRemaining: 0, processedIds: [], lastCursor: '' },
+            { id: 'BMYuya', isActive: true, backfillRemaining: 0, processedIds: [], lastCursor: '', chromaMode: 'none' },
           ],
         } as any;
         // 出力先を今回の auto-run ディレクトリに統一
@@ -815,12 +1101,13 @@ app.on('ready', async () => {
         next.render.durationSec = 3;
         // 背景映像（Xスクショ合成に必須）を既定のテスト動画に設定（存在する場合）
         try {
-          const bgCandidate = path.join(process.cwd(), 'test-data', 'background.mp4');
+          const bgRoot = path.join(process.cwd(), 'haikei.mp4');
+          const bgCandidate = existsSyncFS(bgRoot) ? bgRoot : path.join(process.cwd(), 'test-data', 'background.mp4');
           if (existsSyncFS(bgCandidate)) {
             next.render.backgroundVideoPath = bgCandidate;
             log.info('[auto-run] Set backgroundVideoPath:', bgCandidate);
           } else {
-            log.warn('[auto-run] background video not found at', bgCandidate, '- X screenshot overlay may fail without a background video.');
+            log.warn('[auto-run] background video not found at', bgCandidate, '- overlay may fail without a background video.');
           }
         } catch { /* ignore */ }
         setSettingsPatch(next as Partial<AppSettings>);
