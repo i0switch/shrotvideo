@@ -17,6 +17,8 @@ module.exports = defineConfig({
       'src/tests/e2e-app.test.*',
       // Playwright系やスクリーンショット検証はVitestの対象外
       'screenshot/**',
+  // 別サブプロジェクト（E2E/Playwright含む）は除外
+  'captureapp/**',
       // ネストされた重複ワークスペース配下は除外
       'shrotvideo/**',
       'playwright.config.*',
