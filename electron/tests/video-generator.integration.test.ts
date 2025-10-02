@@ -7,9 +7,17 @@ import type { AppSettings } from '../../src/core/settings';
 import ffmpeg from 'fluent-ffmpeg';
 // Point fluent-ffmpeg to a known ffmpeg binary (bundled)
 import ffmpegStatic from 'ffmpeg-static';
+import ffprobeStatic from 'ffprobe-static';
 if (ffmpegStatic) {
   (ffmpeg as unknown as { setFfmpegPath: (p: string) => void }).setFfmpegPath(ffmpegStatic as unknown as string);
 }
+if (ffprobeStatic) {
+  const probePath = (ffprobeStatic as unknown as { path?: string })?.path || (ffprobeStatic as unknown as string);
+  if (probePath) (ffmpeg as unknown as { setFfprobePath?: (p: string) => void }).setFfprobePath?.(probePath as string);
+}
+
+// このテストでは .meta.json を参照するケースがあるため、明示的に有効化
+process.env.ENABLE_META_JSON = '1';
 
 // Create a temporary ASCII-only directory to avoid ffmpeg issues with spaces/Unicode in paths on Windows
 const tmpRoot = path.join(os.tmpdir(), 'svt_tests');
@@ -26,14 +34,9 @@ const baseSettings: AppSettings = {
     durationSec: 5, // keep short for tests
   bgmPath: path.join(testData, 'bgm.wav'),
     backgroundVideoPath: path.join(testData, 'background.mp4'),
-    captions: { top: 'INTEGRATION_TOP', bottom: 'INTEGRATION_BOTTOM' },
     scale: 0.8,
-    teleTextBg: '#000000',
     qualityPreset: 'standard',
     overlayPosition: 'center',
-    topCaptionHeight: 120,
-    bottomCaptionHeight: 160,
-    captionBgOpacity: 1.0,
   },
 };
 
@@ -90,7 +93,7 @@ describe('video-generator integration (real ffmpeg)', () => {
   it('generates a short vertical video with overlayed screenshot and captions', async () => {
     const screenshot = path.join(testData, 'screenshot.png');
     const out = await generateVideo(screenshot, baseSettings);
-    expect(out).toMatch(/video-\d+\.mp4$/);
+  expect(out).toMatch(/\.mp4$/);
     expect(await exists(out)).toBe(true);
     const stat = await fs.stat(out);
     expect(stat.size).toBeGreaterThan(10_000); // at least some bytes
@@ -119,7 +122,7 @@ describe('video-generator integration (real ffmpeg)', () => {
   it('re-encodes a source video to vertical with captions (no screenshot overlay)', async () => {
     const sourceUrl = path.join(testData, 'background.mp4');
     const out = await generateVideo('', baseSettings, sourceUrl);
-    expect(out).toMatch(/video-\d+\.mp4$/);
+  expect(out).toMatch(/\.mp4$/);
     expect(await exists(out)).toBe(true);
     const stat = await fs.stat(out);
     expect(stat.size).toBeGreaterThan(10_000);
@@ -152,7 +155,7 @@ describe('video-generator integration (real ffmpeg)', () => {
     for (const p of platforms) {
       const settings: AppSettings = {
         ...baseSettings,
-        render: { ...baseSettings.render, resolution: p.resolution, durationSec: p.durationSec, captions: { top: `${p.name}_TOP`, bottom: `${p.name}_BOTTOM` } },
+        render: { ...baseSettings.render, resolution: p.resolution, durationSec: p.durationSec },
       };
       const out = await generateVideo(path.join(testData, 'screenshot.png'), settings);
       expect(await exists(out)).toBe(true);
@@ -206,4 +209,38 @@ describe('video-generator integration (real ffmpeg)', () => {
       expect(Math.round(Number(videoStream?.duration || 0))).toBe(s.duration);
     }
   }, 180_000);
+
+  it('selects background audio when screenshot-only and no BGM', async () => {
+    // Create a background-with-audio file (muxed color video + sine audio)
+    const bgWithAudio = path.join(testData, 'background_with_audio.mp4');
+    // generate only once
+    if (!(await exists(bgWithAudio))) {
+      await new Promise<void>((resolve, reject) => {
+        ffmpeg()
+          .input('color=c=black:s=1080x1920:d=6')
+          .inputOptions(['-f', 'lavfi'])
+          .input('sine=frequency=440:duration=6')
+          .inputOptions(['-f', 'lavfi'])
+          .outputOptions(['-c:v libx264', '-pix_fmt yuv420p', '-c:a aac', '-shortest'])
+          .on('end', () => resolve())
+          .on('error', reject)
+          .save(bgWithAudio);
+      });
+    }
+
+    // Prepare settings: no bgm, but use background_with_audio.mp4
+    const settings: AppSettings = {
+      ...baseSettings,
+      render: { ...baseSettings.render, bgmPath: undefined as any, backgroundVideoPath: bgWithAudio, durationSec: 5 },
+    };
+    const screenshot = path.join(testData, 'screenshot.png');
+    const out = await generateVideo(screenshot, settings, undefined, { accountId: { platform: 'x', id: 'test' }, sourceType: 'screenshot' });
+    expect(await exists(out)).toBe(true);
+    // read .meta.json and verify audio selection
+    const metaPath = out.replace(/\.mp4$/i, '.meta.json');
+    const raw = await fs.readFile(metaPath, 'utf8');
+    const meta = JSON.parse(raw);
+    expect(meta.ffmpeg.audio.useSynthAudio).toBe(false);
+    expect(meta.ffmpeg.audio.selectedKind).toBe('bg');
+  }, 120_000);
 });

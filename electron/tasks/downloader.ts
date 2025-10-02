@@ -8,6 +8,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 const execFileAsync = promisify(execFile);
 import ffmpegStatic from 'ffmpeg-static';
+import ffprobeStatic from 'ffprobe-static';
 // Use shared Platform type to avoid circular deps with electron/login
 import type { Platform } from '../../src/core/settings';
 import { APP, toNetscapeCookie } from '../utils/cookie-utils';
@@ -31,6 +32,14 @@ function resolvePackedBinary(p: string | undefined | null): string | undefined {
 async function hasVideoStream(filePath: string): Promise<boolean> {
     return new Promise((resolve) => {
         try {
+            // Ensure ffprobe path is wired when available
+            try {
+                const probeRaw = ((ffprobeStatic as unknown as { path?: string })?.path || (ffprobeStatic as unknown as string) || '') as string;
+                const probeBin = resolvePackedBinary(probeRaw) || probeRaw;
+                if (probeBin) {
+                    (ffmpeg as unknown as { setFfprobePath?: (p: string) => void }).setFfprobePath?.(probeBin);
+                }
+            } catch {}
             ffmpeg.ffprobe(filePath, (err, data) => {
                 if (err || !data) return resolve(false);
                 const v = (data.streams || []).some((s) => String(s.codec_type).toLowerCase() === 'video');
@@ -70,7 +79,7 @@ export async function downloadVideoToTemp(pageUrl: string, platform: Platform): 
 
   let cookieFilePath: string | undefined;
 
-    if (platform === 'youtube' || platform === 'tiktok') {
+    if (platform === 'youtube' || platform === 'tiktok' || platform === 'x') {
       try {
           // keytar may be unavailable on some systems; load dynamically
           let keytar: any = null;
@@ -87,9 +96,9 @@ export async function downloadVideoToTemp(pageUrl: string, platform: Platform): 
                   // Log first few lines of cookie file for verification
                   log.info(`[downloader:${platform}] DEBUG: Cookie file content (first 200 chars):
 ${cookieFileContent.substring(0, 200)}`);
-              } else {
-                log.info(`[downloader:${platform}] DEBUG: No stored cookies found.`);
-              }
+                            } else {
+                                log.info(`[downloader:${platform}] DEBUG: No stored cookies found.`);
+                            }
                     } else {
                         log.info(`[downloader:${platform}] DEBUG: No raw credential entry found (or keytar not available).`);
                     }
@@ -240,4 +249,55 @@ ${cookieFileContent.substring(0, 200)}`);
           }
       }
   }
+}
+
+/**
+ * Download HLS (m3u8) to a temporary MP4 using ffmpeg.
+ * Tries stream copy first, then falls back to re-encode for maximum compatibility.
+ */
+export async function downloadHlsToTemp(hlsUrl: string, userAgent?: string): Promise<DownloadResult> {
+    const tmpDir = app.getPath('temp');
+    const outPath = path.join(tmpDir, `svtool-hls-${Date.now()}.mp4`);
+    try { if (ffmpegStatic) ffmpeg.setFfmpegPath(resolvePackedBinary(ffmpegStatic as unknown as string) || (ffmpegStatic as unknown as string) || undefined as any); } catch {}
+    const ua = userAgent || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36';
+
+    async function run(copy: boolean): Promise<void> {
+        return new Promise((resolve, reject) => {
+            const cmd = ffmpeg();
+            try { cmd.input(hlsUrl).inputOptions(['-user_agent', ua]); } catch {}
+            if (copy) {
+                cmd.outputOptions([
+                    '-c:v copy',
+                    '-c:a aac', // audio may be aac already; ensure consistent mp4
+                    '-movflags +faststart',
+                    '-preset veryfast',
+                ]);
+            } else {
+                cmd.outputOptions([
+                    '-c:v libx264',
+                    '-c:a aac',
+                    '-pix_fmt yuv420p',
+                    '-movflags +faststart',
+                    '-preset veryfast',
+                ]);
+            }
+            cmd.on('end', () => resolve())
+                 .on('error', (e: Error) => reject(e))
+                 .save(outPath);
+        });
+    }
+
+    try {
+        log.info('[downloader:hls] START copy', hlsUrl);
+        await run(true);
+    } catch (e1) {
+        log.warn('[downloader:hls] copy failed; re-encode fallback', (e1 as Error)?.message || String(e1));
+        await run(false);
+    }
+    // Verify it has a video stream
+    if (!(await hasVideoStream(outPath))) {
+        throw new Error('HLS output has no video stream');
+    }
+    log.info('[downloader:hls] SUCCESS', outPath);
+    return { filepath: outPath };
 }

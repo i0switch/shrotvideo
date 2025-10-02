@@ -27,3 +27,9 @@ declare namespace Electron {
   type FileFilter = any;
   type Rectangle = any;
 }
+
+// Third-party libs without @types
+declare module 'ffprobe-static' {
+  const value: string | { path?: string };
+  export default value;
+}

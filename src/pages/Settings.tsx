@@ -728,7 +728,7 @@ const Settings = () => {
                 <div className="flex items-center justify-between">
                   <div>
                     <Label>テスト処理</Label>
-                    <p className="text-xs text-muted-foreground">監視対象の全アカウントから最新の1件のみを取得して動画処理を行います（重複は自動スキップ）。</p>
+                    <p className="text-xs text-muted-foreground">監視対象の全アカウントから最新の1件のみを取得して動画処理を行います（重複は自動スキップ）。Xについては可能な場合、captureapp経路で動画領域にはめ込み合成します。</p>
                   </div>
                   <Button
                     variant="default"

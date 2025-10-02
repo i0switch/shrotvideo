@@ -2,13 +2,16 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { AppSettings } from '../../src/core/settings';
 
 // Mocks for external modules used by JobManager
-const listRecentItemsMock = vi.fn<
-  [platform: 'x'|'tiktok'|'youtube', accountId: string, limit: number, sinceCursor?: string],
-  Promise<Array<{ id: string; type: 'screenshot'|'video_url'; url?: string; path?: string }>>
->();
+type ListRecentItems = (
+  platform: 'x'|'tiktok'|'youtube',
+  accountId: string,
+  limit: number,
+  sinceCursor?: string
+) => Promise<Array<{ id: string; type: 'screenshot'|'video_url'; url?: string; path?: string }>>;
+const listRecentItemsMock = vi.fn<ListRecentItems>();
 
 vi.mock('../tasks/scraper', () => ({
-  listRecentItems: (...args: Parameters<typeof listRecentItemsMock>) => listRecentItemsMock(...args),
+  listRecentItems: (...args: Parameters<ListRecentItems>) => listRecentItemsMock(...args),
 }));
 
 const downloadVideoToTempMock = vi.fn(async () => ({ filepath: '/tmp/src.mp4' }));

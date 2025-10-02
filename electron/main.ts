@@ -5,6 +5,9 @@ import {
   ipcMain,
   dialog,
   globalShortcut,
+  Tray,
+  Menu,
+  nativeImage,
 } from 'electron';
 import { exec } from 'child_process';
 import './login';
@@ -59,6 +62,8 @@ const ensureJsonlPath = async () => {
 };
 
 let mainWindow: BrowserWindow | null = null;
+let tray: Tray | null = null;
+let isQuitting = false;
 let diagTimer: NodeJS.Timeout | null = null;
 let lastDiagEnabled = false;
 let lastDiagIntervalMs = 0;
@@ -68,6 +73,7 @@ const singleLock = (() => {
   try { return app.requestSingleInstanceLock(); } catch { return true; }
 })();
 if (!singleLock) {
+  try { log.warn('[lifecycle] second instance detected. Quitting current process.'); } catch { /* ignore */ }
   try { app.quit(); } catch { /* ignore */ }
 }
 try {
@@ -147,11 +153,29 @@ function getScreenshotRoot(): string {
 
 // Strict helpers for electron-store access
 function getAllSettings(): AppSettings {
-  return (store as unknown as { store: AppSettings }).store;
+  try {
+    const raw = (store as unknown as { store: AppSettings }).store;
+    return JSON.parse(JSON.stringify(raw)) as AppSettings;
+  } catch {
+    // 最低限のフォールバック
+    return {
+      general: { outputPath: app.getPath('videos') } as any,
+      platforms: { x: { enabled: false, accounts: [], intervalMinutes: 15, scrapeDelayMs: 5000 }, tiktok: { enabled: false, accounts: [], intervalMinutes: 15, scrapeDelayMs: 5000 }, youtube: { enabled: false, accounts: [], intervalMinutes: 15, scrapeDelayMs: 5000 } } as any,
+      render: { resolution: { width: 1080, height: 1920 }, durationSec: 15, bgmPath: '', backgroundVideoPath: '', scale: 0.8, qualityPreset: 'standard', overlayPosition: 'center' } as any,
+    } as AppSettings;
+  }
 }
 function setSettingsPatch(patch: Partial<AppSettings>) {
   const s = store as unknown as { set: (key: string, val: unknown) => void };
-  for (const [k, v] of Object.entries(patch)) s.set(k, v);
+  // ディープクローンして保存（参照の共有による意図せぬ上書きを回避）
+  for (const [k, v] of Object.entries(patch)) {
+    try {
+      const cloned = v && typeof v === 'object' ? JSON.parse(JSON.stringify(v)) : v;
+      s.set(k, cloned);
+    } catch {
+      s.set(k, v);
+    }
+  }
 }
 
 const store = new Store<AppSettings>({
@@ -218,8 +242,12 @@ try {
     }
   }
   // Sanitize jobState platforms
-  const get = (store as unknown as { get: (key: string, def?: unknown) => any }).get;
-  const jobState = get('jobState', { isRunning: false, platforms: {} as Record<string, unknown> });
+  // NOTE: electron-store のメソッドは this に依存するため、切り出して呼び出すと
+  // private フィールド `#options` 参照で落ちる。必ずオブジェクト経由で呼ぶこと。
+  const jobState = (store as unknown as { get: (key: string, def?: unknown) => any }).get(
+    'jobState',
+    { isRunning: false, platforms: {} as Record<string, unknown> },
+  );
   if (jobState && jobState.platforms) {
     const beforeKeys = Object.keys(jobState.platforms);
     let changed = false;
@@ -646,7 +674,53 @@ function setupIpcHandlers() {
     }
   });
 
+  // 新規: プラットフォーム別に最新N件テスト処理
+  ipcMain.handle('jobs.testProcessPlatform', async (_e, platform: 'x'|'tiktok'|'youtube', count: number) => {
+    try {
+      process.env.FORCE_RENDER_DURATION = '1';
+      const n = Math.max(1, Math.min(10, Number(count) || 1));
+      const summary = await jobManager.runTestLatestNPlatform(platform, n);
+      delete process.env.FORCE_RENDER_DURATION;
+      log.info('[jobs.testProcessPlatform] summary:', platform, n, JSON.stringify(summary));
+      return { ok: true, summary } as const;
+    } catch (err) {
+      const e = err as Error;
+      log.error('[jobs.testProcessPlatform] failed:', e.message || String(err));
+      return { ok: false, error: e.message || String(err) } as const;
+    }
+  });
+
   ipcMain.handle('get-status', () => jobManager.getStatus());
+  // 最近の生成メタ取得（観測用）
+  ipcMain.handle('outputs.listMeta', async (_e, limit?: number) => {
+    try {
+      const s = getAllSettings();
+      const outDir = s.general.outputPath || process.cwd();
+      const subDirs = [outDir, path.join(outDir, 'x-composed')];
+      const metas: Array<{ metaPath: string; videoPath?: string; mtime: number; sourceType?: string; platform?: string; classification?: string; ts?: string }>= [];
+      for (const dir of subDirs) {
+        try {
+          const names = await fs.readdir(dir).catch(() => [] as string[]);
+          for (const name of names) {
+            if (!name.toLowerCase().endsWith('.meta.json')) continue;
+            const p = path.join(dir, name);
+            try {
+              const st = await fs.stat(p);
+              const raw = await fs.readFile(p, 'utf8');
+              const j = JSON.parse(raw);
+              const videoPath = p.replace(/\.meta\.json$/i, '.mp4');
+              metas.push({ metaPath: p, videoPath, mtime: st.mtimeMs || Date.now(), sourceType: j?.sourceType, platform: j?.platform, classification: j?.classification, ts: j?.ts });
+            } catch { /* ignore each */ }
+          }
+        } catch { /* ignore dir */ }
+      }
+      metas.sort((a,b) => b.mtime - a.mtime);
+      const n = Math.max(1, Math.min(100, Number(limit) || 20));
+      return metas.slice(0, n);
+    } catch {
+      return [] as Array<any>;
+    }
+  });
   // Watched folder manager controls
   ipcMain.handle('folders.get', () => {
     try {
@@ -811,6 +885,29 @@ const createWindow = () => {
     },
   });
 
+  // Ensure the window becomes visible proactively on startup
+  try {
+    mainWindow.once('ready-to-show', () => {
+      try {
+        mainWindow?.show();
+        mainWindow?.focus();
+      } catch { /* ignore */ }
+    });
+  } catch { /* ignore */ }
+
+  // Hide on close (keep resident in tray)
+  try {
+    mainWindow.on('close', (e) => {
+      try {
+        if (!isQuitting) {
+          e.preventDefault();
+          mainWindow?.hide();
+          log.info('[lifecycle] mainWindow hidden to tray');
+        }
+      } catch { /* ignore */ }
+    });
+  } catch { /* ignore */ }
+
   // Observe renderer console and load lifecycle for debugging white screen
   try {
     mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
@@ -827,23 +924,61 @@ const createWindow = () => {
   } catch { /* ignore */ }
 
   // and load the index.html of the app.
-  // Vite DEV server URL
+  // Use app.isPackaged to reliably detect packaged production vs dev.
   const devServerURL = 'http://127.0.0.1:5173';
-  if (process.env.NODE_ENV === 'development') {
+  if (!app.isPackaged) {
+    // Development: load Vite dev server
     mainWindow.loadURL(devServerURL);
   } else {
-    // __dirname => dist/electron/electron
-    // renderer   => dist/renderer/index.html
+    // Production (packaged): load built renderer file
     const rendererIndex = path.join(__dirname, '../../renderer/index.html');
     log.info('[main] loading renderer file:', rendererIndex);
     mainWindow.loadFile(rendererIndex);
+    // After loadFile in production, ensure window is shown
+    try {
+      mainWindow.once('did-finish-load', () => {
+        try { mainWindow?.show(); mainWindow?.focus(); } catch { /* ignore */ }
+      });
+    } catch { /* ignore */ }
   }
 
-  // Open the DevTools.
-  if (process.env.NODE_ENV === 'development') {
+  // Open the DevTools only in development (unpackaged) mode.
+  if (!app.isPackaged) {
     mainWindow.webContents.openDevTools();
   }
 };
+
+function createTray() {
+  if (tray) return tray;
+  // Minimal 16x16 PNG (blue square) as data URL
+  const dataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAA4AAAAOCAYAAAAfSC3RAAAALElEQVQ4T2NkYGBg+M+ABQxgGJgYGBjmMDAw/M9gYGBQ4jEGAzEwGg0gAwA5vQe8CwWkRQAAAABJRU5ErkJggg==';
+  let icon: Electron.NativeImage | null = null;
+  try { icon = nativeImage.createFromDataURL(dataUrl); } catch { icon = null; }
+  tray = new Tray(icon || nativeImage.createEmpty());
+  try { tray.setToolTip('ShrotVideo'); } catch { /* ignore */ }
+  const show = () => {
+    try {
+      if (!mainWindow || mainWindow.isDestroyed()) {
+        createWindow();
+      }
+      mainWindow!.show();
+      mainWindow!.focus();
+    } catch { /* ignore */ }
+  };
+  try {
+    tray.on('click', () => show());
+  } catch { /* ignore */ }
+  try {
+    const menu = Menu.buildFromTemplate([
+      { label: '表示', click: () => show() },
+      { type: 'separator' },
+      { label: '終了', click: () => { try { isQuitting = true; } catch {}; try { app.quit(); } catch {} } },
+    ]);
+    tray.setContextMenu(menu);
+  } catch { /* ignore */ }
+  log.info('[tray] initialized');
+  return tray;
+}
 
 // This method will be called when Electron has finished
 // initialization and is ready to create browser windows.
@@ -876,6 +1011,7 @@ app.on('ready', async () => {
   log.info('[main] capture-detect', { env: process.env.CAPTURE_X_SCREENSHOTS, cliCaptureAccount, cliCapture });
   if (!headlessCapture) {
     createWindow();
+    try { createTray(); } catch { /* ignore */ }
   } else {
     log.info('[main] Headless capture mode enabled (CAPTURE_X_SCREENSHOTS=1). Skipping renderer window.');
   }
@@ -1051,6 +1187,8 @@ app.on('ready', async () => {
       // Seed: テスト用アカウント/設定を自動投入（フェーズ2仕様）
       try {
         const s = getAllSettings();
+        // 現在の設定をスナップショット（後で復元する）
+        const savedSnapshot = JSON.parse(JSON.stringify(s)) as AppSettings;
         const next = JSON.parse(JSON.stringify(s)) as AppSettings;
         // 有効化 & 監視対象アカウント（各1アカウント）を投入
         next.platforms.x = {
@@ -1112,13 +1250,24 @@ app.on('ready', async () => {
         } catch { /* ignore */ }
         setSettingsPatch(next as Partial<AppSettings>);
         log.info('[auto-run] Seeded test accounts and forced duration=3s. Output:', outDir);
+        // 実行後に復元できるよう、スナップショットをクロージャに渡す
+        (globalThis as any).__SVTEST_SAVED_SETTINGS__ = savedSnapshot;
       } catch (e) {
         log.warn('[auto-run] seeding test accounts failed:', (e as Error)?.message || String(e));
       }
 
   // 自動テスト実行時も短尺を強制
   process.env.FORCE_RENDER_DURATION = '1';
-  jobManager.runTestOnceAll()
+  // 環境変数によりプラットフォーム別の最新N件テストを許可
+  const platEnv = (process.env.RUN_TEST_PLATFORM || '').toLowerCase();
+  const countEnvRaw = process.env.RUN_TEST_COUNT;
+  log.info('[auto-run] env RUN_TEST_PLATFORM=', platEnv || '(none)', 'RUN_TEST_COUNT=', countEnvRaw || '(none)');
+  const countEnv = Math.max(1, Math.min(10, Number(countEnvRaw || '0') || 0));
+  const isPlatRun = platEnv === 'x' || platEnv === 'tiktok' || platEnv === 'youtube';
+  const runnerPromise = isPlatRun
+    ? jobManager.runTestLatestNPlatform(platEnv as 'x'|'tiktok'|'youtube', countEnv || 3)
+    : jobManager.runTestOnceAll();
+  runnerPromise
         .then(async (summary) => {
           try {
             await fs.writeFile(path.join(outDir, 'summary.json'), JSON.stringify(summary, null, 2), 'utf8');
@@ -1130,26 +1279,59 @@ app.on('ready', async () => {
               await fs.writeFile(path.join(outDir, 'app.log.jsonl'), buf);
             }
           } catch { /* ignore */ }
-          log.info('[auto-run] testProcessAllOnce summary saved to:', outDir);
+          if (isPlatRun) {
+            log.info('[auto-run] testProcessPlatform summary saved to:', outDir, 'platform=', platEnv, 'count=', countEnv || 3);
+          } else {
+            log.info('[auto-run] testProcessAllOnce summary saved to:', outDir);
+          }
+          // 設定を元に戻す
+          try {
+            const snap = (globalThis as any).__SVTEST_SAVED_SETTINGS__ as AppSettings | undefined;
+            if (snap) {
+              setSettingsPatch(snap as Partial<AppSettings>);
+              log.info('[auto-run] settings restored after test run');
+            }
+          } catch { /* ignore */ }
           // 片付け
           try { delete process.env.FORCE_RENDER_DURATION; } catch { /* ignore */ }
           // オプション: 自動終了
           try {
-            if (process.env.RUN_TEST_EXIT === '1') {
-              log.info('[auto-run] RUN_TEST_EXIT=1 set. Exiting app...');
+            // GUIウィンドウが存在する場合は終了しない（意図せぬクローズを防止）
+            const hasWindow = !!(mainWindow && !mainWindow.isDestroyed());
+            const allWins = BrowserWindow.getAllWindows().length;
+            const envExit = process.env.RUN_TEST_EXIT === '1';
+            log.info('[auto-run] post-run exit check', { envExit, hasWindow, allWins });
+            if (envExit && !hasWindow && allWins === 0) {
+              log.info('[auto-run] RUN_TEST_EXIT=1 set and no GUI window(s). Exiting app with code 0...');
               app.exit(0);
             }
           } catch { /* ignore */ }
         })
         .catch((e) => {
           const err = e as Error;
-          log.error('[auto-run] testProcessAllOnce failed:', err.message || String(e));
+          if (isPlatRun) {
+            log.error('[auto-run] testProcessPlatform failed:', err.message || String(e));
+          } else {
+            log.error('[auto-run] testProcessAllOnce failed:', err.message || String(e));
+          }
+          // 設定を元に戻す（失敗時も）
+          try {
+            const snap = (globalThis as any).__SVTEST_SAVED_SETTINGS__ as AppSettings | undefined;
+            if (snap) {
+              setSettingsPatch(snap as Partial<AppSettings>);
+              log.info('[auto-run] settings restored after failed test run');
+            }
+          } catch { /* ignore */ }
           // 片付け
           try { delete process.env.FORCE_RENDER_DURATION; } catch { /* ignore */ }
           // オプション: 自動終了（失敗コード）
           try {
-            if (process.env.RUN_TEST_EXIT === '1') {
-              log.info('[auto-run] RUN_TEST_EXIT=1 set. Exiting app with code 1...');
+            const hasWindow = !!(mainWindow && !mainWindow.isDestroyed());
+            const allWins = BrowserWindow.getAllWindows().length;
+            const envExit = process.env.RUN_TEST_EXIT === '1';
+            log.info('[auto-run] post-run exit check (failed)', { envExit, hasWindow, allWins });
+            if (envExit && !hasWindow && allWins === 0) {
+              log.info('[auto-run] RUN_TEST_EXIT=1 set and no GUI window(s). Exiting app with code 1...');
               app.exit(1);
             }
           } catch { /* ignore */ }
@@ -1239,9 +1421,8 @@ app.on('ready', async () => {
 // explicitly with Cmd + Q.
 app.on('window-all-closed', () => {
   try { globalShortcut.unregisterAll(); } catch { /* ignore */ }
-  if (process.platform !== 'darwin') {
-    app.quit();
-  }
+  try { log.info('[lifecycle] window-all-closed'); } catch { /* ignore */ }
+  // ここでは終了しない（トレイ常駐を維持）。mac でも同様に常駐。
 });
 
 app.on('activate', () => {
@@ -1254,6 +1435,16 @@ app.on('activate', () => {
 
 // In this file you can include the rest of your app's specific main process
 // code. You can also put them in separate files and import them here.
+
+// Observe quit lifecycle
+try {
+  app.on('will-quit', (e) => { try { isQuitting = true; log.warn('[lifecycle] will-quit'); } catch {} });
+  app.on('quit', (_e, exitCode) => { try { log.warn('[lifecycle] quit', { exitCode }); } catch {} });
+} catch { /* ignore */ }
+
+try {
+  process.on('exit', (code) => { try { log.warn('[lifecycle] process.exit', { code }); } catch {} });
+} catch { /* ignore */ }
 
 // Global error handlers to always log unexpected errors
 process.on('uncaughtException', (err) => {

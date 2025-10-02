@@ -365,7 +365,7 @@ const APP = 'ShortVideoAssistant';
 
 // ===== New: Recent items listing for backfill/new-only mode =====
 
-export type ListedItem = { id: string; type: 'screenshot' | 'video_url'; url?: string; path?: string };
+export type ListedItem = { id: string; type: 'screenshot' | 'video_url'; url?: string; path?: string; classification?: string };
 
 /**
  * List recent items for a platform/account. Ordered newest -> older.
@@ -500,12 +500,14 @@ async function listRecentItemsX_viaBackend(accountId: string, limit: number, sin
       const base = f.name.replace(/\.png$/i, '');
       const metaPath = path.join(userOutDir, `${base}.json`);
       let tweetId: string | undefined;
+      let classification: string | undefined;
       let url: string | undefined;
       try {
         const metaRaw = await fs.readFile(metaPath, 'utf8');
         const meta = JSON.parse(metaRaw);
         tweetId = meta?.tweetId || undefined;
         url = meta?.href || undefined;
+        classification = meta?.classification || undefined;
       } catch { /* ignore: meta JSON が無いケースもある */ }
       if (!tweetId) {
         // 旧命名規則: xshot-<user>-<tweetId>-<...>.png から抽出を試みる
@@ -521,7 +523,7 @@ async function listRecentItemsX_viaBackend(accountId: string, limit: number, sin
         log.info(`[x:${accountId}] sinceCursor reached (${sinceCursor}); stopping enumeration.`);
         break;
       }
-      results.push({ id, type: 'screenshot', path: f.path, url });
+  results.push({ id, type: 'screenshot', path: f.path, url, classification });
       if (results.length >= limit) break;
     }
   } catch (e) {

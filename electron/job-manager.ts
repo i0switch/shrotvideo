@@ -7,87 +7,64 @@ import { scrapeAccount, ScrapeResult, listRecentItems } from './tasks/scraper';
 import { generateVideo } from './tasks/video-generator';
 import { downloadVideoToTemp } from './tasks/downloader';
 import { captureTweetScreenshotAndBox, overlayVideoOnScreenshot } from './tasks/x-composer';
+import { downloadHlsToTemp } from './tasks/downloader';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 
 type JobStatus = 'idle' | 'running' | 'stopped';
 
-interface PlatformJobManager {
-  status: JobStatus;
-  timer?: NodeJS.Timeout;
-  consecutiveFails: number;
-  processedCount: number; // New: for total processed count
-  startTime: number; // New: for tracking start time
-}
-
-interface PlatformJobManagerState { // For persistence
+interface PlatformJobManagerState {
   status: JobStatus;
   consecutiveFails: number;
   processedCount: number;
   startTime: number;
+  timer?: NodeJS.Timeout;
 }
 
-interface JobState { // Overall job state for persistence
+interface JobState {
   isRunning: boolean;
   platforms: Record<Platform, PlatformJobManagerState>;
 }
 
 export class JobManager {
-  private store: Store<AppSettings>;
-  private jobs: Map<Platform, PlatformJobManager>;
-  private isRunning: boolean = false; // This will be loaded from store
+  private store: Store<AppSettings & { jobState?: JobState }>;
   private globalQueue: PQueue;
-  // De-duplication: prevent processing the same item concurrently or repeatedly in short time
-  private inFlight: Set<string> = new Set();
-  private recentlyProcessed: Map<string, number> = new Map();
-  private readonly RECENT_TTL_MS = 60 * 60 * 1000; // 1 hour
+  private jobs: Map<Platform, PlatformJobManagerState & { timer?: NodeJS.Timeout }> = new Map();
+  private isRunning = false;
+  private inFlight = new Set<string>();
+  private recentlyProcessed = new Map<string, number>();
+  private readonly RECENT_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
-  constructor(store: Store<AppSettings>) {
-    this.store = store;
-    this.jobs = new Map();
-    this.globalQueue = new PQueue({ concurrency: 5 });
+  constructor(store: Store<AppSettings & { jobState?: JobState }>) {
+    this.store = store as any;
+    this.globalQueue = new PQueue({ concurrency: 1 });
 
-    // Load previous job state
-  const savedJobState = (this.store as unknown as { get: (k: string, d: JobState) => JobState }).get('jobState', { isRunning: false, platforms: {} as Record<Platform, PlatformJobManagerState> });
-    this.isRunning = savedJobState.isRunning || false;
-
-    // Guard: allow only supported platforms in restored state
+    const savedJobState = (this.store as unknown as { get: (k: string, d: any) => JobState }).get('jobState', { isRunning: false, platforms: {} as Record<Platform, PlatformJobManagerState> });
     const supported = new Set<Platform>(['x', 'tiktok', 'youtube'] as Platform[]);
     let removedUnsupported = false;
-    if (savedJobState.platforms) {
-      for (const platformKey in savedJobState.platforms) {
-        if (!supported.has(platformKey as Platform)) {
-          // Drop unsupported keys from memory and mark for persistence cleanup
-          delete (savedJobState.platforms as Record<string, unknown>)[platformKey];
-          removedUnsupported = true;
-          continue;
-        }
-        const platform = platformKey as Platform;
-        const savedPlatformState = savedJobState.platforms[platform];
-        // Only restore if it was running, otherwise treat as idle
-  // 前回 running だったジョブは、起動後に再開するため idle として復元し、start() 時に有効化
-  const status = savedPlatformState.status === 'running' ? 'idle' : savedPlatformState.status;
-        this.jobs.set(platform, {
-          status: status,
-          consecutiveFails: savedPlatformState.consecutiveFails,
-          processedCount: savedPlatformState.processedCount,
-          startTime: savedPlatformState.startTime,
-          // timer will be set when job actually starts
-        });
-        if (savedPlatformState.status === 'running') { // If it was running, log that it needs to be restarted
+    // Initialize jobs from saved state, sanitize unsupported
+    for (const key of Object.keys(savedJobState.platforms || {})) {
+      if (!supported.has(key as Platform)) {
+        delete (savedJobState.platforms as any)[key];
+        removedUnsupported = true;
+      }
+    }
+    for (const platform of supported) {
+      const savedPlatformState = savedJobState.platforms?.[platform];
+      if (savedPlatformState) {
+        this.jobs.set(platform, { ...savedPlatformState, status: 'stopped', timer: undefined });
+        if (savedPlatformState.status === 'running') {
           log.info(`Previous job for ${platform} was running. Will restart on app start.`);
         }
       }
-      if (removedUnsupported) {
-        try {
-          // Persist sanitized jobState back to store
-          (this.store as unknown as { set: (k: string, v: unknown) => void }).set('jobState', savedJobState);
-          log.info('[migrate] Removed unsupported platforms from jobState during JobManager init');
-        } catch {
-          // ignore
-        }
-      }
     }
+    if (removedUnsupported) {
+      try {
+        (this.store as unknown as { set: (k: string, v: unknown) => void }).set('jobState', savedJobState);
+        log.info('[migrate] Removed unsupported platforms from jobState during JobManager init');
+      } catch { /* ignore */ }
+    }
+    this.isRunning = false; // always start stopped
     log.info(`JobManager initialized. isRunning: ${this.isRunning}`);
   }
 
@@ -452,7 +429,41 @@ export class JobManager {
     return { totalAccounts: accounts.length, attempted, processed };
   }
 
-  private async processItem(platform: Platform, accountId: string, item: { id: string; type: 'screenshot'|'video_url'; url?: string; path?: string }) {
+  // 新規: 指定プラットフォームの有効アカウントで最新N件を重複許可で処理（状態は更新しない）
+  public async runTestLatestNPlatform(platform: Platform, n: number): Promise<{ totalAccounts: number; attempted: number; processed: number; }>{
+    const settings: AppSettings = (this.store as unknown as { store: AppSettings }).store;
+    const ps = settings.platforms[platform];
+    if (!ps || !ps.enabled) {
+      return { totalAccounts: 0, attempted: 0, processed: 0 };
+    }
+    const accounts = (ps.accounts || []).filter(a => a?.isActive && (a.id || '').trim()).map(a => (a.id || '').trim());
+    const attempted = accounts.length * Math.max(0, n);
+    let processed = 0;
+    for (const id of accounts) {
+      try {
+        let items = await listRecentItems(platform, id, n, undefined);
+        // Heuristic: for X, prioritize items with video classification to exercise overlay path
+        if (platform === 'x') {
+          const score = (c?: string) => {
+            const s = String(c || '').toLowerCase();
+            if (s.includes('single_video')) return 2;
+            if (s.includes('multi_video') || s.includes('video')) return 1;
+            return 0;
+          };
+          items = [...items].sort((a, b) => score(b.classification) - score(a.classification));
+        }
+        for (const item of items) {
+          try {
+            await this.globalQueue.add(() => this.processItem(platform, id, item));
+            processed += 1;
+          } catch { /* 個別失敗は継続 */ }
+        }
+      } catch { /* アカウント単位失敗は継続 */ }
+    }
+    return { totalAccounts: accounts.length, attempted, processed };
+  }
+
+  private async processItem(platform: Platform, accountId: string, item: { id: string; type: 'screenshot'|'video_url'; url?: string; path?: string; classification?: string }) {
     // スクレイピング済みアイテムから動画生成実行
     const key = `${platform}:${accountId}:${item.id}`;
     if (this.inFlight.has(key)) {
@@ -464,33 +475,74 @@ export class JobManager {
     try {
     if (item.type === 'screenshot') {
       // X のスクショ項目に URL が付与されている場合、まず動画ダウンロードを試行（動画付きポストならこちらを優先）
-      if (platform === 'x' && item.url) {
+      if (platform === 'x') {
+        // 1) まずキャプチャして記事矩形と外部リンク候補を取得
+        const handle = (accountId || '').replace(/^@/, '');
+        const tweetUrl = item.url || (/^\d+$/.test(item.id || '') ? `https://x.com/${handle}/status/${item.id}` : undefined);
+        const shotOut = path.join((this.store as unknown as { store: AppSettings }).store.general.outputPath || process.cwd(), 'x-composed');
+        let cap = null as Awaited<ReturnType<typeof captureTweetScreenshotAndBox>> | null;
         try {
-          log.info(`[${platform}:${accountId}] Trying tweet video download first: ${item.url}`);
-          const dl = await downloadVideoToTemp(item.url, platform);
-
-          // 追加: captureappの仕様に合わせて、スクショ上の動画領域にはめ込む合成を試行
-          // 1) 記事スクショと相対座標を取得
-          const shotOut = path.join((this.store as unknown as { store: AppSettings }).store.general.outputPath || process.cwd(), 'x-composed');
-          const cap = await captureTweetScreenshotAndBox(item.url, shotOut);
-          if (cap && cap.relBox && cap.classification === 'single_video') {
-            const composed = await overlayVideoOnScreenshot({
-              screenshotPath: cap.screenshotPath,
-              videoPath: dl.filepath,
-              box: cap.relBox,
-              outputDir: shotOut,
-              fileName: `x-compose-${accountId}-${cap.tweetId || item.id}-${Date.now()}.mp4`,
-            });
-            videoPath = composed;
-            log.info(`[${platform}:${accountId}] Composited tweet video onto screenshot region.`);
-          } else {
-            // 合成条件が満たせない場合は従来の縦動画生成にフォールバック
-            videoPath = await generateVideo('', (this.store as unknown as { store: AppSettings }).store, dl.filepath, { accountId: { platform, id: accountId }, sourceType: 'x_tweet_video' });
-            log.info(`[${platform}:${accountId}] Used tweet video as source (fallback vertical compose).`);
-          }
-          // 成功したのでスクショ合成ルートはスキップ
+          if (tweetUrl) cap = await captureTweetScreenshotAndBox(tweetUrl, shotOut);
         } catch (e) {
-          log.warn(`[${platform}:${accountId}] Tweet video download not available; falling back to screenshot. Reason: ${(e as Error)?.message || String(e)}`);
+          log.warn(`[${platform}:${accountId}] captureTweetScreenshotAndBox failed: ${(e as Error)?.message || String(e)}`);
+        }
+        // 2) ダウンロード候補（tweetUrl, externalUrl）を順に試す
+        let dlOk: { filepath: string } | null = null;
+  const candidates: string[] = [];
+        if (tweetUrl) candidates.push(tweetUrl);
+  if (cap?.externalUrl) candidates.push(cap.externalUrl);
+  if ((cap as any)?.hlsHint) candidates.push((cap as any).hlsHint);
+        for (const u of candidates) {
+          try {
+            log.info(`[${platform}:${accountId}] Trying download for overlay: ${u}`);
+            // HLS 直リンク（video.twimg.com などの m3u8）は ffmpeg フォールバックで取得
+            if (/\.m3u8($|\?)/.test(u) || /video\.twimg\.com/.test(u)) {
+              const hls = await downloadHlsToTemp(u);
+              dlOk = hls; break;
+            }
+            const dl = await downloadVideoToTemp(u, /youtube\.com|youtu\.be/.test(u) ? 'youtube' as any : platform);
+            dlOk = dl; break;
+          } catch (e) {
+            log.warn(`[${platform}:${accountId}] Download try failed for ${u}: ${(e as Error)?.message || String(e)}`);
+          }
+        }
+        // 3) relBox と 動画が揃えばオーバーレイ、無ければフォールバック
+        if (cap && cap.relBox && dlOk) {
+          // まずスクショ上に動画をはめ込み（中間ファイル）
+          const composed = await overlayVideoOnScreenshot({
+            screenshotPath: cap.screenshotPath,
+            videoPath: dlOk.filepath,
+            box: cap.relBox,
+            outputDir: shotOut,
+            fileName: `x-compose-${accountId}-${cap.tweetId || item.id}-${Date.now()}.mp4`,
+          });
+          log.info(`[${platform}:${accountId}] Composited onto screenshot (captureapp path).`);
+          // 仕様: その後、背景合成/クロマ適用を行い、指定フォルダ（outputPath）へ最終出力
+          videoPath = await generateVideo('', (this.store as unknown as { store: AppSettings }).store, composed, { accountId: { platform, id: accountId }, sourceType: 'x_tweet_overlay' as any });
+          try {
+            if (process.env.ENABLE_META_JSON === '1') {
+              const metaPath = composed.replace(/\.mp4$/i, '.meta.json');
+              const meta = {
+                sourceType: 'x_tweet_overlay',
+                platform,
+                accountId,
+                tweetId: cap.tweetId || item.id,
+                url: tweetUrl,
+                classification: cap.classification || item.classification || 'unknown',
+                relBox: cap.relBox,
+                screenshotPath: cap.screenshotPath,
+                tweetVideoPath: dlOk.filepath,
+                composedPath: composed,
+                overlayDiagnostics: { dpr: (cap as any)?.dpr || null, ...(cap as any)?.diag },
+                finalOutputPath: videoPath,
+                ts: new Date().toISOString(),
+              } as const;
+              await fs.writeFile(metaPath, JSON.stringify(meta, null, 2), 'utf8');
+            }
+          } catch { /* ignore */ }
+        } else if (dlOk) {
+          videoPath = await generateVideo('', (this.store as unknown as { store: AppSettings }).store, dlOk.filepath, { accountId: { platform, id: accountId }, sourceType: 'x_tweet_video' });
+          log.info(`[${platform}:${accountId}] Used downloaded video as source (fallback vertical compose).`);
         }
       }
       // まだ videoPath が未決定なら、従来通りスクショ合成へ
@@ -569,3 +621,5 @@ export class JobManager {
     this.recentlyProcessed.set(key, Date.now());
   }
 }
+
+export default JobManager;

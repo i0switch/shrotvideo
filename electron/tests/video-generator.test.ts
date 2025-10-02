@@ -94,7 +94,7 @@ describe('generateVideo', () => {
   expect(outJoined).toContain('-map');
 
     // Check save was called
-    expect(mockFfmpeg.save).toHaveBeenCalledWith(expect.stringMatching(/\/tmp\/videos\/video-\d+\.mp4/));
+  expect(mockFfmpeg.save).toHaveBeenCalledWith(expect.stringMatching(/\/tmp\/videos\/.*\.mp4$/));
   });
 
   it('should generate a correct ffmpeg command for Function B (video re-encode)', async () => {

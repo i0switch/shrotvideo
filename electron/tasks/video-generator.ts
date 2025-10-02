@@ -1,5 +1,6 @@
 import ffmpeg from 'fluent-ffmpeg';
 import ffmpegStatic from 'ffmpeg-static';
+import ffprobeStatic from 'ffprobe-static';
 import { app } from 'electron';
 import path from 'path';
 import log from 'electron-log';
@@ -142,6 +143,26 @@ function hasAudioStream(filePath: string): Promise<boolean> {
   });
 }
 
+// ファイル名用: 不正文字を安全な '_' に置換
+function sanitizeFileComponent(s: string): string {
+  return s
+    .replace(/^@+/, '')
+    .replace(/[\\/:*?"<>|\r\n\t]+/g, '_')
+    .replace(/\s+/g, '_')
+    .slice(0, 200);
+}
+
+function formatTimestamp(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const yyyy = d.getFullYear();
+  const MM = pad(d.getMonth() + 1);
+  const dd = pad(d.getDate());
+  const hh = pad(d.getHours());
+  const mm = pad(d.getMinutes());
+  const ss = pad(d.getSeconds());
+  return `${yyyy}${MM}${dd}-${hh}${mm}${ss}`;
+}
+
 export function generateVideo(
   screenshotPath: string,
   settings: AppSettings,
@@ -151,7 +172,7 @@ export function generateVideo(
     accountId?: { platform: string; id: string };
     folderChroma?: { mode?: 'none'|'image'|'video'; image?: string; video?: string };
     // 可観測性: どの経路で生成したかを上位から伝える
-    sourceType?: 'x_tweet_video' | 'youtube' | 'tiktok' | 'screenshot' | 'other';
+  sourceType?: 'x_tweet_overlay' | 'x_tweet_video' | 'youtube' | 'tiktok' | 'screenshot' | 'other';
   }
 ): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -162,6 +183,14 @@ export function generateVideo(
       const bin = resolvePackedBinary(raw) || raw;
       if (bin) {
         (ffmpeg as unknown as { setFfmpegPath: (p: string) => void }).setFfmpegPath(bin);
+      }
+    } catch { /* ignore */ }
+    // Also wire ffprobe binary if available (improves audio/video stream probing reliability)
+    try {
+      const probeRaw = ((ffprobeStatic as unknown as { path?: string })?.path || (ffprobeStatic as unknown as string) || '') as string;
+      const probeBin = resolvePackedBinary(probeRaw) || probeRaw;
+      if (probeBin) {
+        (ffmpeg as unknown as { setFfprobePath?: (p: string) => void }).setFfprobePath?.(probeBin);
       }
     } catch { /* ignore */ }
     const { render: rawRender, general } = settings;
@@ -176,7 +205,14 @@ export function generateVideo(
     
 
   const startedAt = Date.now();
-  const outputFileName = `video-${startedAt}.mp4`;
+  // 出力ファイル名: プラットフォーム名＿アカウント名＿生成時間.mp4（全角アンダースコア）
+  const accountPlatform = (opts?.accountId?.platform || 'unknown').toLowerCase();
+  const accountName = opts?.accountId?.id ? String(opts.accountId.id) : 'unknown';
+  const platformPart = sanitizeFileComponent(accountPlatform || 'unknown');
+  const accountPart = sanitizeFileComponent(accountName || 'unknown');
+  const tsPart = formatTimestamp(new Date(startedAt));
+  const fullWidthUnderscore = '＿';
+  const outputFileName = `${platformPart}${fullWidthUnderscore}${accountPart}${fullWidthUnderscore}${tsPart}.mp4`;
     const outputPath = normalizePath(path.join(general.outputPath, outputFileName));
     // Ensure output directory exists
     try {
@@ -262,16 +298,23 @@ export function generateVideo(
         }
       }
     } catch { /* ignore */ }
-    const chromaKey = '0x00FD00'; // #00FD00
+  const chromaKey = '0x00FD00'; // #00FD00（既定のキーカラー）
+  // クロマキー閾値は素材タイプ別に少し寛容にする（動画は圧縮の色ずれを考慮）
+  const chromaSimImg = 0.12; // 類似度（画像）
+  const chromaBlendImg = 0.08; // ブレンド（画像）
+  const chromaSimVid = 0.28; // 類似度（動画）
+  const chromaBlendVid = 0.10; // ブレンド（動画）
 
     // Case A: Screenshot overlay (requires background as base)
   if (!srcPath && screenshotPath) {
       if (!bgPath) return reject(new Error('Background video is required for screenshot overlay.'));
       // Input order: background (0), screenshot (1)
-  ffmpegCommand.input(bgPath);
-  bgInputIndex = 0;
-      ffmpegCommand.input(normalizePath(screenshotPath));
-  const screenshotIndex = 1;
+    ffmpegCommand.input(bgPath);
+    bgInputIndex = 0;
+    nextInputIndex = 1;
+    ffmpegCommand.input(normalizePath(screenshotPath));
+    const screenshotIndex = 1;
+    nextInputIndex = 2;
       // 背景は常に全画面フィット
       // 背景: cover（拡大して中央切り抜き）
       complexFilter.push(
@@ -287,24 +330,24 @@ export function generateVideo(
       );
       // ここにクロマキー合成（アカウント指定時）
   if (chroma.mode === 'image' && chromaImage && fs.existsSync(chromaImage)) {
+        const idx = nextInputIndex; // use next slot for chroma image
         ffmpegCommand.input(chromaImage);
-        const idx = 2; // [2:v]
+        nextInputIndex++;
         complexFilter.push(
-          // 画像は全長表示: 単純に最終出力へ align して重ねる。クロマキー適用
-          `[${idx}:v]scale=${videoWidth}:${videoHeight}:force_original_aspect_ratio=decrease,chromakey=${chromaKey}:0.1:0.2[keyed]`,
+          // 画像は RGBA 化してから chromakey を適用（アルファ合成の安定化）
+          `[${idx}:v]scale=${videoWidth}:${videoHeight}:force_original_aspect_ratio=decrease,format=rgba,chromakey=${chromaKey}:${chromaSimImg}:${chromaBlendImg},format=rgba[keyed]`,
           // shortest=0 で前景の終了でミキシングが止まらないようにする（画像は最後のフレーム保持）
           `[base_with_overlay][keyed]overlay=(W-w)/2:(H-h)/2:shortest=0[chroma_applied]`
         );
         currentVideo = '[chroma_applied]';
   } else if (chroma.mode === 'video' && chromaVideo && fs.existsSync(chromaVideo)) {
+        // 動画は RGBA 化して chromakey、さらに最終長に足りない場合のため tpad で末尾クローン
+        const idx = nextInputIndex; // use next slot for chroma video
         ffmpegCommand.input(chromaVideo);
-        const idx = 2; // [2:v]
-        // 動画はループ表示: loop フィルタは画像用なので video の場合は -stream_loop で対応
-        // fluent-ffmpeg では inputOptions で設定
+        nextInputIndex++;
         try { ffmpegCommand.inputOptions([`-stream_loop`, `-1`]); } catch {/* ignore */}
         complexFilter.push(
-          `[${idx}:v]scale=${videoWidth}:${videoHeight}:force_original_aspect_ratio=decrease,chromakey=${chromaKey}:0.1:0.2[keyed]`,
-          // shortest=0 で前景が早期に終了しても合成が継続（将来的にループ実装を追加）
+          `[${idx}:v]scale=${videoWidth}:${videoHeight}:force_original_aspect_ratio=decrease,format=rgba,chromakey=${chromaKey}:${chromaSimVid}:${chromaBlendVid},format=rgba${shouldApplyDuration ? `,tpad=stop_mode=clone:stop_duration=${durationSec}` : ''}[keyed]`,
           `[base_with_overlay][keyed]overlay=(W-w)/2:(H-h)/2:shortest=0[chroma_applied]`
         );
         currentVideo = '[chroma_applied]';
@@ -312,12 +355,12 @@ export function generateVideo(
         currentVideo = '[base_with_overlay]';
       }
       finalVideoLabel = currentVideo;
-      nextInputIndex = 2;
+      // nextInputIndex already reflects added inputs
     } else if (srcPath && bgPath) {
       // Case B: 背景の上にソース映像を重ねる（背景が見えるように）
       // Input order: background (0), source (1)
-  ffmpegCommand.input(bgPath); bgInputIndex = 0;
-  ffmpegCommand.input(srcPath); srcInputIndex = 1;
+      ffmpegCommand.input(bgPath); bgInputIndex = 0; nextInputIndex = 1;
+      ffmpegCommand.input(srcPath); srcInputIndex = 1; nextInputIndex = 2;
       if (srcHasVideo) {
         complexFilter.push(
           // 背景をcover
@@ -330,20 +373,22 @@ export function generateVideo(
           })() as unknown as string
         );
         // ここにクロマキー合成（アカウント指定時）
-  if (chroma.mode === 'image' && chromaImage && fs.existsSync(chromaImage)) {
+        if (chroma.mode === 'image' && chromaImage && fs.existsSync(chromaImage)) {
+          const idx = nextInputIndex;
           ffmpegCommand.input(chromaImage);
-          const idx = 2;
+          nextInputIndex++;
           complexFilter.push(
-            `[${idx}:v]scale=${videoWidth}:${videoHeight}:force_original_aspect_ratio=decrease,chromakey=${chromaKey}:0.1:0.2[keyed]`,
+            `[${idx}:v]scale=${videoWidth}:${videoHeight}:force_original_aspect_ratio=decrease,format=rgba,chromakey=${chromaKey}:${chromaSimImg}:${chromaBlendImg},format=rgba[keyed]`,
             `[src_over_bg][keyed]overlay=(W-w)/2:(H-h)/2:shortest=0[chroma_applied]`
           );
           currentVideo = '[chroma_applied]';
-  } else if (chroma.mode === 'video' && chromaVideo && fs.existsSync(chromaVideo)) {
+        } else if (chroma.mode === 'video' && chromaVideo && fs.existsSync(chromaVideo)) {
+          const idx = nextInputIndex;
           ffmpegCommand.input(chromaVideo);
-          const idx = 2;
+          nextInputIndex++;
           try { ffmpegCommand.inputOptions([`-stream_loop`, `-1`]); } catch {/* ignore */}
           complexFilter.push(
-            `[${idx}:v]scale=${videoWidth}:${videoHeight}:force_original_aspect_ratio=decrease,chromakey=${chromaKey}:0.1:0.2[keyed]`,
+            `[${idx}:v]scale=${videoWidth}:${videoHeight}:force_original_aspect_ratio=decrease,format=rgba,chromakey=${chromaKey}:${chromaSimVid}:${chromaBlendVid},format=rgba${shouldApplyDuration ? `,tpad=stop_mode=clone:stop_duration=${durationSec}` : ''}[keyed]`,
             `[src_over_bg][keyed]overlay=(W-w)/2:(H-h)/2:shortest=0[chroma_applied]`
           );
           currentVideo = '[chroma_applied]';
@@ -359,30 +404,33 @@ export function generateVideo(
         currentVideo = '[base_only]';
         finalVideoLabel = currentVideo;
       }
-      nextInputIndex = 2;
+      // nextInputIndex already reflects added inputs
     } else {
       // Case C: Single video (source or background only) -> scale + pad
-  const single = srcPath || bgPath; // at least one exists here
-  ffmpegCommand.input(single);
-  if (single === srcPath) { srcInputIndex = 0; } else { bgInputIndex = 0; }
+      const single = srcPath || bgPath; // at least one exists here
+      ffmpegCommand.input(single);
+      if (single === srcPath) { srcInputIndex = 0; } else { bgInputIndex = 0; }
+      nextInputIndex = 1;
       complexFilter.push(
         `[0:v]scale=${videoWidth}:${videoHeight}:force_original_aspect_ratio=increase,crop=${videoWidth}:${videoHeight}:(in_w-${videoWidth})/2:(in_h-${videoHeight})/2,format=yuv420p[scaled]`
       );
       // シングル動画の上にクロマキー可能
-  if (chroma.mode === 'image' && chromaImage && fs.existsSync(chromaImage)) {
+      if (chroma.mode === 'image' && chromaImage && fs.existsSync(chromaImage)) {
+        const idx = nextInputIndex;
         ffmpegCommand.input(chromaImage);
-        const idx = 1;
+        nextInputIndex++;
         complexFilter.push(
-          `[${idx}:v]scale=${videoWidth}:${videoHeight}:force_original_aspect_ratio=decrease,chromakey=${chromaKey}:0.1:0.2[keyed]`,
+          `[${idx}:v]scale=${videoWidth}:${videoHeight}:force_original_aspect_ratio=decrease,format=rgba,chromakey=${chromaKey}:${chromaSimImg}:${chromaBlendImg},format=rgba[keyed]`,
           `[scaled][keyed]overlay=(W-w)/2:(H-h)/2:shortest=0[chroma_applied]`
         );
         currentVideo = '[chroma_applied]';
-  } else if (chroma.mode === 'video' && chromaVideo && fs.existsSync(chromaVideo)) {
+      } else if (chroma.mode === 'video' && chromaVideo && fs.existsSync(chromaVideo)) {
+        const idx = nextInputIndex;
         ffmpegCommand.input(chromaVideo);
-        const idx = 1;
+        nextInputIndex++;
         try { ffmpegCommand.inputOptions([`-stream_loop`, `-1`]); } catch {/* ignore */}
         complexFilter.push(
-          `[${idx}:v]scale=${videoWidth}:${videoHeight}:force_original_aspect_ratio=decrease,chromakey=${chromaKey}:0.1:0.2[keyed]`,
+          `[${idx}:v]scale=${videoWidth}:${videoHeight}:force_original_aspect_ratio=decrease,format=rgba,chromakey=${chromaKey}:${chromaSimVid}:${chromaBlendVid},format=rgba${shouldApplyDuration ? `,tpad=stop_mode=clone:stop_duration=${durationSec}` : ''}[keyed]`,
           `[scaled][keyed]overlay=(W-w)/2:(H-h)/2:shortest=0[chroma_applied]`
         );
         currentVideo = '[chroma_applied]';
@@ -390,7 +438,7 @@ export function generateVideo(
         currentVideo = '[scaled]';
       }
       finalVideoLabel = currentVideo;
-      nextInputIndex = 1;
+      // nextInputIndex already reflects added inputs
     }
 
     // テキスト描画を全撤去。finalVideoLabel を currentVideo から直接作る
@@ -401,11 +449,8 @@ export function generateVideo(
     }
     finalVideoLabel = '[v_final]';
 
-  // Use semicolons to separate independent filter chains
-  const filterGraph = complexFilter.join('; ');
-  log.info('[video-generator] filterGraph:', filterGraph);
-  log.info('[video-generator] computed:', { scale, videoWidth, videoHeight, safeHeight, overlayPosition, chroma: { mode: chroma.mode, hasImage: !!chromaImage, hasVideo: !!chromaVideo } });
-  ffmpegCommand.complexFilter(filterGraph);
+  // フィルタグラフの適用は、後段で「無音合成」を追加する可能性があるため、
+  // オーディオ選択確定後に行う。
 
   // Optional BGM input (added for potential fallback)
     let bgmInputIndex: number | undefined;
@@ -415,13 +460,6 @@ export function generateVideo(
       nextInputIndex += 1;
     }
 
-    ffmpegCommand
-      .videoCodec('libx264');
-
-  // Duration の適用ルール:
-  // - opts.forceDuration=true のときは常に設定の durationSec を適用（テスト実行用の上限）
-  // - それ以外は、スクショ（overlay）の場合のみ durationSec を適用
-
     // Collect all output options into one list to preserve order
     const outOpts: string[] = [];
     if (shouldApplyDuration) {
@@ -430,32 +468,68 @@ export function generateVideo(
     outOpts.push('-preset', getFFmpegPreset(qualityPreset));
     outOpts.push('-pix_fmt', 'yuv420p');
 
-    // Decide audio source based on platform priority rules
+    // Decide audio source strictly per spec
     const platform = (opts?.accountId?.platform || '').toLowerCase();
+    const sourceType = opts?.sourceType || (srcPath ? 'other' : (screenshotPath ? 'screenshot' : 'other'));
     // Probe audio availability for local files (http assumed to have audio)
-    const srcHasAudio = !!srcInputIndex && (srcPath && srcPath.startsWith('http') ? true : (srcPath ? await hasAudioStream(srcPath) : false));
-    const bgHasAudio = !!bgInputIndex && (!!bgPath ? await hasAudioStream(bgPath) : false);
+    const srcHasAudio = (srcInputIndex !== undefined) && (srcPath && srcPath.startsWith('http') ? true : (srcPath ? await hasAudioStream(srcPath) : false));
+    const bgHasAudio = (bgInputIndex !== undefined) && (bgPath ? (bgPath.startsWith('http') ? true : await hasAudioStream(bgPath)) : false);
 
     let selectedAudioIndex: number | undefined;
-    // まず素材音声があれば最優先（プラットフォーム共通）
-    if (srcHasAudio && srcInputIndex !== undefined) {
-      selectedAudioIndex = srcInputIndex;
-    } else {
-      if (platform === 'x') {
-        // X: BGM -> 背景
-        if (bgmInputIndex !== undefined) selectedAudioIndex = bgmInputIndex;
+    const isX = platform === 'x';
+    const isTikTok = platform === 'tiktok';
+    const isYouTube = platform === 'youtube';
+
+    if (isTikTok || isYouTube) {
+      // TikTok, YouTube: ①src → ②BGM → ③背景 → ④無音
+      if (srcHasAudio && srcInputIndex !== undefined) selectedAudioIndex = srcInputIndex;
+      else if (bgmInputIndex !== undefined) selectedAudioIndex = bgmInputIndex;
+      else if (bgHasAudio && bgInputIndex !== undefined) selectedAudioIndex = bgInputIndex;
+    } else if (isX) {
+      // X: 単一動画ポスト → ①src → ②BGM → ③背景 → ④無音
+      //     画像/文章/複数メディア → ①BGM → ②背景 → ③無音
+  const isSingleVideo = sourceType === 'x_tweet_video' || (sourceType === 'x_tweet_overlay' && !!srcHasVideo);
+      if (isSingleVideo) {
+        if (srcHasAudio && srcInputIndex !== undefined) selectedAudioIndex = srcInputIndex;
+        else if (bgmInputIndex !== undefined) selectedAudioIndex = bgmInputIndex;
         else if (bgHasAudio && bgInputIndex !== undefined) selectedAudioIndex = bgInputIndex;
       } else {
-        // その他（TikTok/YouTube含む）: BGM -> 背景
         if (bgmInputIndex !== undefined) selectedAudioIndex = bgmInputIndex;
         else if (bgHasAudio && bgInputIndex !== undefined) selectedAudioIndex = bgInputIndex;
       }
+    } else {
+      // その他: ①src → ②BGM → ③背景 → ④無音
+      if (srcHasAudio && srcInputIndex !== undefined) selectedAudioIndex = srcInputIndex;
+      else if (bgmInputIndex !== undefined) selectedAudioIndex = bgmInputIndex;
+      else if (bgHasAudio && bgInputIndex !== undefined) selectedAudioIndex = bgInputIndex;
     }
+
+    // 最終的に音声が選べなければ、完全無音のステレオトラックを合成
+    const useSynthAudio = (selectedAudioIndex === undefined);
+    if (useSynthAudio) {
+      complexFilter.push(`anullsrc=r=48000:cl=stereo[a_synth]`);
+      log.warn('[video-generator] no audio input detected; injecting synthetic silent audio track');
+    }
+
+    // ここでフィルタグラフを確定し適用
+    const filterGraph = complexFilter.join('; ');
+    log.info('[video-generator] filterGraph:', filterGraph);
+    log.info('[video-generator] computed:', { scale, videoWidth, videoHeight, safeHeight, overlayPosition, chroma: { mode: chroma.mode, hasImage: !!chromaImage, hasVideo: !!chromaVideo } });
+    ffmpegCommand.complexFilter(filterGraph);
+
+    ffmpegCommand
+      .videoCodec('libx264');
+
+  // Duration の適用ルール:
+  // - opts.forceDuration=true のときは常に設定の durationSec を適用（テスト実行用の上限）
+  // - それ以外は、スクショ（overlay）の場合のみ durationSec を適用
+
+    
 
     // Map video always
     outOpts.push('-map', finalVideoLabel || '[v_final]');
 
-    if (selectedAudioIndex !== undefined) {
+  if (!useSynthAudio && selectedAudioIndex !== undefined) {
       const selectedKind = ((): 'src'|'bgm'|'bg' => {
         if (bgmInputIndex !== undefined && selectedAudioIndex === bgmInputIndex) return 'bgm';
         if (srcInputIndex !== undefined && selectedAudioIndex === srcInputIndex) return 'src';
@@ -469,9 +543,11 @@ export function generateVideo(
         outOpts.push('-af', `apad=pad_dur=${durationSec}`);
       }
     } else {
-      // No audio source; disable audio to avoid codec errors
-      log.warn(`[video-generator] no audio source available; output will be silent (platform=${platform || 'n/a'})`);
-      outOpts.push('-an');
+      // 合成無音トラックをマップ
+      outOpts.push('-map', `[a_synth]`);
+      outOpts.push('-c:a', 'aac');
+      // 注意: [a_synth] は filter_complex から供給されるため、ここで -af は付けない。
+      // 長さは -t（出力全体の制限）および動画側の tpad で制御される。
     }
 
     // 強制duration時は-video/-audioどちらかが短くても5秒に到達するよう- shortest は付けない
@@ -490,7 +566,7 @@ export function generateVideo(
       }
     }
 
-    // メタ情報を準備（end/error 双方で書き込む）
+    // メタ情報のJSON出力は既定で無効化（ENABLE_META_JSON=1 のときのみ書き出し）
     const baseMeta: Record<string, any> = {
       version: 1,
       startedAt,
@@ -510,10 +586,31 @@ export function generateVideo(
         shouldApplyDuration,
         durationSec,
         preset: getFFmpegPreset(qualityPreset),
+        audio: {
+          useSynthAudio,
+          selectedIndex: selectedAudioIndex ?? null,
+          selectedKind: (() => {
+            if (useSynthAudio) return 'synth';
+            if (selectedAudioIndex === undefined) return null;
+            if (bgmInputIndex !== undefined && selectedAudioIndex === bgmInputIndex) return 'bgm';
+            if (srcInputIndex !== undefined && selectedAudioIndex === srcInputIndex) return 'src';
+            if (bgInputIndex !== undefined && selectedAudioIndex === bgInputIndex) return 'bg';
+            return 'unknown';
+          })(),
+          // 診断用: 検出結果を残す
+          probed: {
+            srcHasAudio,
+            bgHasAudio,
+            bgmPresent: bgmInputIndex !== undefined,
+          },
+          synth: useSynthAudio ? { mode: 'silent' } : null,
+        },
       },
     };
 
+    const shouldWriteMeta = process.env.ENABLE_META_JSON === '1';
     const writeMeta = (meta: Record<string, any>) => {
+      if (!shouldWriteMeta) return; // 出力しない
       try {
         const metaPath = outputPath.replace(/\.mp4$/i, '.meta.json');
         const dir = path.dirname(outputPath);

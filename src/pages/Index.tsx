@@ -9,6 +9,8 @@ import { useJobManager } from "@/hooks/use-job-manager";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import type { Platform } from "@/core/settings";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 const Index = () => {
   const { settings } = useSettings();
@@ -126,6 +128,9 @@ const Index = () => {
             )}
           </div>
 
+          {/* 新規: プラットフォーム別テスト（件数指定） */}
+          <PlatformTestRunner />
+
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-4 text-sm">
             <div>
               <div className="text-muted-foreground">出力先</div>
@@ -182,8 +187,99 @@ const Index = () => {
 
       <LogConsole logs={logs} onClear={clearLogs} className="min-h-[30vh] h-[40vh] md:h-[50vh] xl:h-[60vh]" />
 
+      {/* 最近の生成結果（.meta.json） */}
+      <RecentOutputs />
+
     </div>
   );
 };
 
 export default Index;
+
+// 補助コンポーネント: プラットフォーム別テスト実行（件数指定）
+function PlatformTestRunner() {
+  const [platform, setPlatform] = useState<Platform>('x');
+  const [count, setCount] = useState<number>(3);
+  const [running, setRunning] = useState(false);
+  const [result, setResult] = useState<{ totalAccounts: number; attempted: number; processed: number } | null>(null);
+  return (
+    <div className="p-4 border rounded-lg space-y-3">
+      <h3 className="font-semibold">プラットフォーム別テスト生成</h3>
+      <div className="flex flex-col sm:flex-row gap-3 items-center">
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-muted-foreground">プラットフォーム</span>
+          <Select value={platform} onValueChange={(v: Platform) => setPlatform(v)}>
+            <SelectTrigger className="w-40"><SelectValue placeholder="選択" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="x">X</SelectItem>
+              <SelectItem value="tiktok">TikTok</SelectItem>
+              <SelectItem value="youtube">YouTube</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-muted-foreground">件数</span>
+          <Input type="number" className="w-24" min={1} max={10} value={count}
+            onChange={(e) => setCount(Math.max(1, Math.min(10, Number(e.target.value) || 1)))} />
+        </div>
+        <div className="flex-1" />
+        <Button disabled={running} onClick={async () => {
+          if (running) return;
+          setRunning(true); setResult(null);
+          try {
+            const res = await window.electronAPI.testProcessPlatform(platform, count);
+            if (res.ok) setResult(res.summary!);
+          } finally { setRunning(false); }
+        }}>{running ? '実行中...' : 'この条件で実行'}</Button>
+      </div>
+      {result && (
+        <p className="text-xs text-muted-foreground">結果: 対象 {result.totalAccounts} / 実行 {result.attempted} / 処理 {result.processed}</p>
+      )}
+      <p className="text-xs text-muted-foreground">注: Xでは可能な場合、tweetの動画をダウンロードして記事スクショの動画領域にはめ込み合成します（captureapp経路）。</p>
+    </div>
+  );
+}
+
+function RecentOutputs() {
+  const [items, setItems] = useState<Array<{ metaPath: string; videoPath?: string; mtime: number; sourceType?: string; platform?: string; classification?: string; ts?: string }>>([]);
+  const [loading, setLoading] = useState(false);
+  const load = async () => {
+    if (!window.electronAPI?.listRecentOutputs) return;
+    setLoading(true);
+    try {
+      const list = await window.electronAPI.listRecentOutputs(20);
+      setItems(list || []);
+    } finally { setLoading(false); }
+  };
+  useEffect(() => { load(); }, []);
+  return (
+    <Card className="mt-6">
+      <CardHeader>
+        <CardTitle>最近の生成結果（観測）</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        <div className="flex items-center gap-2">
+          <Button variant="outline" onClick={load} disabled={loading}>{loading ? '更新中...' : '更新'}</Button>
+          <span className="text-xs text-muted-foreground">.meta.json を読み取り、captureapp オーバーレイ使用の有無を確認できます</span>
+        </div>
+        <div className="space-y-1 text-xs">
+          {items.length === 0 && <div className="text-muted-foreground">表示できる結果がありません</div>}
+          {items.map((it) => (
+            <div key={it.metaPath} className="p-2 border rounded-md">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge variant={it.sourceType === 'x_tweet_overlay' ? 'default' : 'secondary'}>
+                  {it.sourceType || 'unknown'}
+                </Badge>
+                {it.platform && <Badge variant="outline">{it.platform}</Badge>}
+                {it.classification && <Badge variant="outline">{it.classification}</Badge>}
+                <span className="text-muted-foreground">{new Date(it.mtime).toLocaleString()}</span>
+              </div>
+              <div className="truncate">video: {it.videoPath || '-'}</div>
+              <div className="truncate text-muted-foreground">meta: {it.metaPath}</div>
+            </div>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}

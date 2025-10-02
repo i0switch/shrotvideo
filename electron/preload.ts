@@ -31,7 +31,9 @@ const electronAPI = {
   // Immediate backfill trigger
   startInitialFetch: (platform: 'x'|'tiktok'|'youtube', accountId: string) => ipcRenderer.invoke('jobs.startInitialFetch', platform, accountId) as Promise<boolean>,
   testProcessAllOnce: () => ipcRenderer.invoke('jobs.testProcessAllOnce') as Promise<{ ok: boolean; summary?: { totalAccounts: number; attempted: number; processed: number; }; error?: string }>,
+  testProcessPlatform: (platform: 'x'|'tiktok'|'youtube', count: number) => ipcRenderer.invoke('jobs.testProcessPlatform', platform, count) as Promise<{ ok: boolean; summary?: { totalAccounts: number; attempted: number; processed: number; }; error?: string }>,
   testScrapeX: (accountId: string) => ipcRenderer.invoke('testScrapeX', accountId) as Promise<string | null>,
+  listRecentOutputs: (limit?: number) => ipcRenderer.invoke('outputs.listMeta', limit) as Promise<Array<{ metaPath: string; videoPath?: string; mtime: number; sourceType?: string; platform?: string; classification?: string; ts?: string }>>,
   // Watched folders
   getWatchedFolders: () => ipcRenderer.invoke('folders.get') as Promise<import('../src/core/settings').WatchedFolder[]>,
   setWatchedFolders: (folders: import('../src/core/settings').WatchedFolder[]) => ipcRenderer.invoke('folders.set', folders) as Promise<boolean>,

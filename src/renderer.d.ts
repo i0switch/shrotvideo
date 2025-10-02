@@ -24,7 +24,9 @@ export interface IElectronAPI {
   // Trigger immediate initial fetch/backfill for a newly added account
   startInitialFetch: (platform: 'x'|'tiktok'|'youtube', accountId: string) => Promise<boolean>;
   testProcessAllOnce: () => Promise<{ ok: boolean; summary?: { totalAccounts: number; attempted: number; processed: number; }; error?: string }>;
+  testProcessPlatform: (platform: 'x'|'tiktok'|'youtube', count: number) => Promise<{ ok: boolean; summary?: { totalAccounts: number; attempted: number; processed: number; }; error?: string }>;
   testScrapeX: (accountId: string) => Promise<string | null>;
+  listRecentOutputs: (limit?: number) => Promise<Array<{ metaPath: string; videoPath?: string; mtime: number; sourceType?: string; platform?: string; classification?: string; ts?: string }>>;
     // Watched folders
     getWatchedFolders?: () => Promise<import('./core/settings').WatchedFolder[]>;
     setWatchedFolders?: (folders: import('./core/settings').WatchedFolder[]) => Promise<boolean>;

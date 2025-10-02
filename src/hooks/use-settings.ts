@@ -21,6 +21,13 @@ function arrayReplacementCustomizer<T>(objValue: unknown, srcValue: unknown): T 
 const mockSettings: AppSettings = {
   general: {
     outputPath: '/mock/path', // A mock path
+    testOutputPath: '/mock/path',
+    diagnosticLogging: false,
+    diagnosticIntervalSec: 10,
+    initialBackfillCount: 3,
+    watchedFolders: [],
+    watchedFoldersRetentionHours: 24,
+    watchedFoldersMaxCache: 2000,
   },
   platforms: {
     x: { enabled: false, accounts: [], intervalMinutes: 15, scrapeDelayMs: 5000 },
