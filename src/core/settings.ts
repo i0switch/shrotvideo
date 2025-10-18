@@ -10,6 +10,10 @@ export interface Account {
   // 重複ダウンロード/生成を避けるために、既に処理済みのアイテムIDの履歴
   // 最新が配列末尾でも先頭でもよいが、ここでは末尾に追加し最大500件で古い順に削除
   processedIds?: string[];
+  // Chroma key specific per-account overrides (optional)
+  chromaSimilarity?: number;
+  chromaBlend?: number;
+  chromaAsset?: string;
 }
 
 export interface PlatformSettings {
@@ -18,6 +22,13 @@ export interface PlatformSettings {
   intervalMinutes: number;
   scrapeDelayMs: number; // New: Delay before scraping each account in milliseconds
   // Note: Login credentials should be handled securely, not stored here directly
+  // Optional chroma configuration used by job-manager
+  chroma?: {
+    enabled?: boolean;
+    mode?: 'fixed' | 'random';
+    foregroundPath?: string;
+    foregroundDir?: string;
+  };
 }
 
 export interface AppSettings {
@@ -29,6 +40,11 @@ export interface AppSettings {
   diagnosticIntervalSec?: number; // 何秒おきに出力するか
   // 初回監視時に遡って保存・加工する件数（YouTube/TikTokの新規アカウントに適用）
   initialBackfillCount?: number;
+  // Pipeline options
+  autoInjectBgm?: boolean;
+  bgmLoudnessNormalize?: boolean;
+  chromaDefaultSimilarity?: number;
+  chromaDefaultBlend?: number;
   };
   platforms: {
     x: PlatformSettings;
@@ -64,6 +80,11 @@ export interface AppSettings {
   // New: fine-grained vertical offsets inside caption boxes (px)
   topCaptionOffset?: number;
   bottomCaptionOffset?: number;
+  };
+  // Optional templates system used to apply per-account/platform presets
+  templates?: {
+    selection?: string;
+    items?: Record<string, Partial<AppSettings>>;
   };
   // The 'ingest' and 'scheduler' sections are now part of PlatformSettings
 }
