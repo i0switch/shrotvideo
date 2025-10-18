@@ -1,5 +1,6 @@
 {
-  "name": "vite_react_shadcn_ts",
+  "name": "shortvideo-genius",
+  "type": "module",
   "private": true,
   "version": "0.0.0",
   "description": "ShortVideo-Genius",
@@ -7,64 +8,86 @@
   "homepage": "./",
   "main": "electron-entry.cjs",
   "scripts": {
-    "dev": "vite --strictPort --force",
+    "dev": "vite --config vite.config.mjs --strictPort --force",
+    "dev:5174": "cross-env DEV_SERVER_PORT=5174 vite --config vite.config.mjs --strictPort --force",
     "start": "npm run build:electron && npx cross-env NODE_ENV=development concurrently \"npm:dev\" \"wait-on http://127.0.0.1:5173 && npx electron .\"",
+    "start:dev": "npm run build:electron && cross-env NODE_ENV=development DEV_SERVER_PORT=5174 concurrently \"npm:dev:5174\" \"wait-on http://127.0.0.1:5174 && electron .\"",
     "start:preview": "npm run build:electron && npx cross-env NODE_ENV=development PREVIEW_ON_START=1 PREVIEW_FILE=test-data/background.mp4 PREVIEW_EXIT=1 concurrently \"npm:dev\" \"wait-on http://127.0.0.1:5173 && npx electron .\"",
-    "build": "npm run clean && npm run build:renderer && npm run build:electron && electron-builder --publish=never",
-  "dist:win": "npm run build:renderer && npm run build:electron && electron-builder --win --publish=never",
-  "dist:mac": "npm run build:renderer && npm run build:electron && electron-builder --mac --publish=never",
-  "postinstall": "node scripts/postinstall-playwright.cjs",
-    "build:renderer": "vite build",
+    "build": "npm run clean && npm run build:renderer && npm run build:electron && electron-builder --publish=never --config.asar=false",
+    "build:dir": "npm run clean && npm run build:renderer && npm run build:electron && electron-builder --dir --publish=never --config.asar=false",
+    "dist:win": "npm run build:renderer && npm run build:electron && electron-builder --win --publish=never",
+    "dist:mac": "npm run build:renderer && npm run build:electron && electron-builder --mac --publish=never",
+    "postinstall": "node scripts/postinstall-playwright.cjs",
+    "build:renderer": "vite build --config vite.config.mjs",
     "build:electron": "tsc -p tsconfig.electron.json && node scripts/postbuild-electron.cjs",
     "lint": "eslint .",
-    "preview": "vite preview",
+    "lint:ci": "eslint .",
+    "preview": "vite preview --config vite.config.mjs",
     "test": "npx vitest",
+    "test:ci": "vitest run --reporter=default",
     "test:unit": "vitest run",
     "test:e2e": "npx playwright test",
     "dist": "electron-builder",
     "package": "npm run build && npm run dist",
     "clean": "npx rimraf dist release",
     "run:urls": "node ./dist/electron/electron/tools/generate-from-urls.js",
-    "run:batch": "node ./dist/electron/electron/tools/generate-batch-accounts.js",
+    "run:batch": "node ./dist/electron/electron/tools/generate-batch-accounts.clean.js",
+  "run:testvideo": "node ./dist/electron/electron/tools/generate-test-video.clean.js",
+  "compare:durations": "npm run build:electron && node ./dist/electron/electron/tools/compare-durations.js",
     "start:prod": "npm run build:renderer && npm run build:electron && npx cross-env NODE_ENV=production npx electron .",
-    "test:autorun": "npm run build:renderer && npm run build:electron && npx cross-env RUN_TEST_ON_START=1 RUN_TEST_EXIT=1 NODE_ENV=production npx electron .",
+  "test:autorun": "npm run build:renderer && npm run build:electron && npx cross-env RUN_TEST_ON_START=1 RUN_TEST_EXIT=1 JM_TEST_FAST=1 NODE_ENV=production npx electron .",
     "gemini:spec": "node scripts/gemini.cjs spec",
     "gemini:generate": "node scripts/gemini.cjs generate",
     "gemini:all": "node scripts/gemini.cjs all",
-    "capture:x": "node scripts/capture-x-posts.cjs"
+    "capture:x": "node scripts/capture-x-posts.cjs",
+    "analyze:performance": "node scripts/analyze-performance-v2.cjs"
   },
   "build": {
-    "appId": "com.gemini.shortvideotool",
-  "productName": "ShortVideo-Genius",
+    "appId": "com.shortvideo.genius",
+    "productName": "ShortVideo-Genius",
     "electronVersion": "37.4.0",
     "npmRebuild": false,
+    "asar": false,
+    "icon": "build/icon.ico",
     "directories": {
       "output": "release"
     },
-    "asarUnpack": [
-      "node_modules/ffmpeg-static/**",
-      "node_modules/ytdlp-nodejs/**",
-  "node_modules/playwright-core/.local-browsers/**",
-      "screenshot/.auth/**",
-      "screenshot/out/screenshots/**"
+    "extraResources": [
+      {
+        "from": "ms-playwright",
+        "to": "ms-playwright",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "screenshot",
+        "to": "screenshot",
+        "filter": [
+          "**/*",
+          "!out/**",
+          "!out/**/*"
+        ]
+      }
+      
     ],
     "files": [
-      "dist/",
-      "package.json",
+      "dist/**",
       "electron-entry.cjs",
-      "scripts/run-screenshot-grab.cjs",
-  "node_modules/ytdlp-nodejs/**",
-  "node_modules/ffmpeg-static/**",
-  "node_modules/playwright-core/**",
-  "node_modules/playwright-core/.local-browsers/**",
-      "screenshot/**",
-  "ms-playwright/**",
-      "!node_modules/playwright/**",
-      "!**/node_modules/playwright/**",
-      "!node_modules/playwright/node_modules/fsevents/**",
-      "!node_modules/playwright/node_modules/**",
-      "!**/node_modules/**/fsevents/**",
-      "!**/fsevents/**"
+      "electron/tabcapture-extension/**",
+      "package.json",
+      "!**/*.ts",
+      "!**/.venv/**",
+      "!release/**",
+      "!release_build/**",
+      "!release2/**",
+      "!release3/**",
+      "!artifacts/**",
+      "!test-results/**",
+      "!quality-test/**",
+      "!**/node_modules/.cache/**",
+      "!**/test-output/**",
+      "!**/test-output-v2/**"
     ],
     "mac": {
       "target": [
@@ -162,12 +185,14 @@
     "@types/react-dom": "^18.3.7",
     "@vitejs/plugin-react": "^5.0.2",
     "@vitejs/plugin-react-swc": "^4.0.1",
+    "ajv": "^8.17.1",
     "autoprefixer": "^10.4.21",
     "concurrently": "^9.2.1",
     "cross-env": "^7.0.3",
     "electron": "^37.4.0",
     "electron-builder": "^26.0.12",
     "eslint": "^9.34.0",
+    "eslint-plugin-import": "^2.32.0",
     "eslint-plugin-react-hooks": "^5.2.0",
     "eslint-plugin-react-refresh": "^0.4.20",
     "esm": "^3.2.25",
