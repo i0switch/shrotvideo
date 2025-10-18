@@ -8,8 +8,8 @@
   "homepage": "./",
   "main": "electron-entry.cjs",
   "scripts": {
-    "dev": "vite --config vite.config.mjs --strictPort --force",
-    "dev:5174": "cross-env DEV_SERVER_PORT=5174 vite --config vite.config.mjs --strictPort --force",
+    "dev": "vite --config vite.config.js --strictPort --force",
+    "dev:5174": "cross-env DEV_SERVER_PORT=5174 vite --config vite.config.js --strictPort --force",
     "start": "npm run build:electron && npx cross-env NODE_ENV=development concurrently \"npm:dev\" \"wait-on http://127.0.0.1:5173 && npx electron .\"",
     "start:dev": "npm run build:electron && cross-env NODE_ENV=development DEV_SERVER_PORT=5174 concurrently \"npm:dev:5174\" \"wait-on http://127.0.0.1:5174 && electron .\"",
     "start:preview": "npm run build:electron && npx cross-env NODE_ENV=development PREVIEW_ON_START=1 PREVIEW_FILE=test-data/background.mp4 PREVIEW_EXIT=1 concurrently \"npm:dev\" \"wait-on http://127.0.0.1:5173 && npx electron .\"",
@@ -18,11 +18,11 @@
     "dist:win": "npm run build:renderer && npm run build:electron && electron-builder --win --publish=never",
     "dist:mac": "npm run build:renderer && npm run build:electron && electron-builder --mac --publish=never",
     "postinstall": "node scripts/postinstall-playwright.cjs",
-    "build:renderer": "vite build --config vite.config.mjs",
+    "build:renderer": "vite build --config vite.config.js",
     "build:electron": "tsc -p tsconfig.electron.json && node scripts/postbuild-electron.cjs",
     "lint": "eslint .",
     "lint:ci": "eslint .",
-    "preview": "vite preview --config vite.config.mjs",
+    "preview": "vite preview --config vite.config.js",
     "test": "npx vitest",
     "test:ci": "vitest run --reporter=default",
     "test:unit": "vitest run",
@@ -32,10 +32,10 @@
     "clean": "npx rimraf dist release",
     "run:urls": "node ./dist/electron/electron/tools/generate-from-urls.js",
     "run:batch": "node ./dist/electron/electron/tools/generate-batch-accounts.clean.js",
-  "run:testvideo": "node ./dist/electron/electron/tools/generate-test-video.clean.js",
-  "compare:durations": "npm run build:electron && node ./dist/electron/electron/tools/compare-durations.js",
+    "run:testvideo": "node ./dist/electron/electron/tools/generate-test-video.clean.js",
+    "compare:durations": "npm run build:electron && node ./dist/electron/electron/tools/compare-durations.js",
     "start:prod": "npm run build:renderer && npm run build:electron && npx cross-env NODE_ENV=production npx electron .",
-  "test:autorun": "npm run build:renderer && npm run build:electron && npx cross-env RUN_TEST_ON_START=1 RUN_TEST_EXIT=1 JM_TEST_FAST=1 NODE_ENV=production npx electron .",
+    "test:autorun": "npm run build:renderer && npm run build:electron && npx cross-env RUN_TEST_ON_START=1 RUN_TEST_EXIT=1 JM_TEST_FAST=1 NODE_ENV=production npx electron .",
     "gemini:spec": "node scripts/gemini.cjs spec",
     "gemini:generate": "node scripts/gemini.cjs generate",
     "gemini:all": "node scripts/gemini.cjs all",
@@ -69,7 +69,6 @@
           "!out/**/*"
         ]
       }
-      
     ],
     "files": [
       "dist/**",
