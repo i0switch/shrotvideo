@@ -155,6 +155,27 @@ async function createCookieFileIfAny(platform: Platform): Promise<string | undef
   }
 }
 
+// Resolve Playwright browser path for packaged app (resources/playwright_browsers)
+function getPlaywrightEnv() {
+  const env = { ...process.env } as NodeJS.ProcessEnv;
+  try {
+    // Prefer extraResources when packaged
+    const resPath = (app as any).isPackaged ? process.resourcesPath : null;
+    if (resPath) {
+      const browsersDir = path.join(resPath, 'playwright_browsers');
+      env.PLAYWRIGHT_BROWSERS_PATH = browsersDir; // absolute path where browsers are shipped
+    } else {
+      // Fallback to project-local packaged browsers inside node_modules
+      env.PLAYWRIGHT_BROWSERS_PATH = env.PLAYWRIGHT_BROWSERS_PATH || '0';
+    }
+  } catch {
+    env.PLAYWRIGHT_BROWSERS_PATH = env.PLAYWRIGHT_BROWSERS_PATH || '0';
+  }
+  // Needed when spawning electron to run scripts as Node
+  env.ELECTRON_RUN_AS_NODE = '1';
+  return env;
+}
+
 // Helper: run screenshot backend runner (screenshot/bin/grab.cjs) via Electron's Node
 async function runScreenshotGrab(user: string, count: number): Promise<void> {
   // Resolve script path robustly: prefer workspace CWD during dev, fallback to appPath for packaged
@@ -165,8 +186,7 @@ async function runScreenshotGrab(user: string, count: number): Promise<void> {
   const outBase = path.join(getScreenshotRoot(), 'out', 'screenshots');
   try { await fs.mkdir(outBase, { recursive: true }); } catch { /* ignore */ }
   await new Promise<void>((resolve) => {
-  // Use packaged local browsers shipped under node_modules/playwright-core/.local-browsers by setting to '0'
-  const env = { ...process.env, ELECTRON_RUN_AS_NODE: '1', PLAYWRIGHT_BROWSERS_PATH: '0' } as NodeJS.ProcessEnv;
+  const env = getPlaywrightEnv();
     let stderr = '';
     try {
       log.info(`[screenshot:grab] spawn: exe=${process.execPath} script=${script} user=${user} count=${count} out=${outBase}`);
@@ -417,9 +437,10 @@ async function listRecentItemsX_viaBackend(accountId: string, limit: number, sin
     if (sorted.length < Math.max(1, limit)) {
       try {
         log.warn(`[x:${accountId}] PNG不足(${sorted.length}/${limit}). Trying inline Playwright fallback...`);
-        // Prefer full playwright (bundled in devDeps). If not present, this require will throw.
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
-        const { chromium } = require('playwright');
+  // Prefer full playwright; fallback to playwright-core in packaged runtime
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  let chromium: any;
+  try { chromium = require('playwright').chromium; } catch { chromium = require('playwright-core').chromium; }
   const storageStatePath = path.join(getScreenshotRoot(), '.auth', 'x.storage.json');
         const browser = await (chromium as any).launch({ headless: true });
         const context = await browser.newContext({

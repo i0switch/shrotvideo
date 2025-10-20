@@ -37,6 +37,17 @@ import { createHash } from 'node:crypto';
 // Configure logger
 log.initialize();
 log.transports.file.level = 'debug';
+// Ensure Playwright env path for packaged runtime
+try {
+  if ((app as any).isPackaged) {
+    const resPath = (process as any).resourcesPath;
+    const p1 = resPath ? path.join(resPath, 'playwright_browsers') : '';
+    const p2 = path.join(app.getPath('userData'), 'ms-playwright');
+    const fsn = require('node:fs');
+    if (p1 && fsn.existsSync(p1)) process.env.PLAYWRIGHT_BROWSERS_PATH = p1;
+    else process.env.PLAYWRIGHT_BROWSERS_PATH = p2;
+  }
+} catch { /* ignore */ }
 // Offscreen capture stability on some Windows setups
 try { app.disableHardwareAcceleration(); } catch { /* ignore */ }
 // Reduce Chromium disk cache errors on restricted paths (e.g., OneDrive Desktop)
@@ -114,14 +125,18 @@ async function ensurePlaywrightInstalled(): Promise<void> {
       log.warn('[playwright-install] playwright CLI not found (playwright not installed). Skipping browser install.');
       return;
     }
-    const browsersPath = path.join(app.getPath('userData'), 'ms-playwright');
+    const browsersPath = (() => {
+      // Prefer resources/playwright_browsers if extraResources shipped (read-only
+      try { if ((app as any).isPackaged) return path.join(process.resourcesPath, 'playwright_browsers'); } catch {}
+      return path.join(app.getPath('userData'), 'ms-playwright');
+    })();
     try { await fs.mkdir(browsersPath, { recursive: true }); } catch {}
     // Run: electron as node to execute Playwright CLI
     const exe = process.execPath; // electron.exe / packaged exe
     const env = { ...process.env, ELECTRON_RUN_AS_NODE: '1', PLAYWRIGHT_BROWSERS_PATH: browsersPath } as NodeJS.ProcessEnv;
     await new Promise<void>((resolve) => {
       try {
-        const child = spawn(exe, [cliJs, 'install', 'chromium'], { env, stdio: ['ignore', 'ignore', 'pipe'] });
+  const child = spawn(exe, [cliJs, 'install', 'chromium', 'chromium-headless-shell'], { env, stdio: ['ignore', 'ignore', 'pipe'] });
         let warned = false;
         child.stderr.on('data', (d) => { if (!warned) { warned = true; log.info('[playwright-install]', String(d).trim()); } });
         child.on('close', () => resolve());
@@ -290,6 +305,38 @@ class FolderWatchManager {
            n.endsWith('.avi') || n.endsWith('.png') || n.endsWith('.jpg') || n.endsWith('.jpeg') || n.endsWith('.webp');
   }
 
+  // Windows 大文字小文字差/セパレータを吸収した正規化
+  private norm(p: string): string {
+    try {
+      const r = path.resolve(p);
+      return process.platform === 'win32' ? r.replace(/\\/g, '/').toLowerCase() : r.replace(/\\/g, '/');
+    } catch { return p; }
+  }
+
+  private isInside(child: string, parent: string): boolean {
+    try {
+      const c = this.norm(child);
+      let p = this.norm(parent);
+      if (!p.endsWith('/')) p += '/';
+      return c.startsWith(p);
+    } catch { return false; }
+  }
+
+  // 本アプリが生成した出力ファイル名かを簡易判定（プラットフォーム＿アカウント＿YYYYMMDD-HHMMSS）
+  private isAppGeneratedName(name: string): boolean {
+    try {
+      const full = '＿'; // 全角アンダースコア
+      // 先頭のプラットフォーム名（unknown|x|tiktok|youtube など英数字・ハイフンも許容）
+      const platform = `[a-z0-9_-]+`;
+      // アカウント部分はサニタイズ後（英数・アンダースコア）
+      const account = `[A-Za-z0-9_\.\-]+`;
+      const ts = `\\d{8}-\\d{6}`;
+      const exts = `(?:mp4|mov|mkv|webm|avi)`;
+      const re = new RegExp(`^${platform}${full}${account}${full}${ts}\\.${exts}$`, 'i');
+      return re.test(name);
+    } catch { return false; }
+  }
+
   private cleanupTTL(now: number) {
     const s = this.getSettings();
     const ttlH = Math.max(1, Number(s.general.watchedFoldersRetentionHours || 24));
@@ -366,6 +413,20 @@ class FolderWatchManager {
       const k = this.fileKey(dir, { name: f.name, size: f.size, mtimeMs: f.mtimeMs });
       if (this.processed.has(k)) continue;
       const abs = f.abs;
+      // 自アプリの出力ディレクトリ配下かつ、命名規則に合致する生成物は再処理しない
+      try {
+        const outDir = String(s.general?.outputPath || '').trim();
+        const testOutDir = String((s.general as any)?.testOutputPath || '').trim();
+        const base = path.basename(abs);
+        const inOut = outDir && this.isInside(abs, outDir);
+        const inTestOut = testOutDir && this.isInside(abs, testOutDir);
+        if ((inOut || inTestOut) && this.isAppGeneratedName(base)) {
+          log.info('[folder-watch] skip generated output:', abs);
+          // 処理済みに入れて短期での再判定を避ける
+          this.processed.set(k, Date.now());
+          continue;
+        }
+      } catch { /* ignore */ }
       const inflight = this.hash(k);
       if (this.inFlight.has(inflight)) continue;
       this.inFlight.add(inflight);
@@ -389,6 +450,17 @@ class FolderWatchManager {
         })();
         log.info('[folder-watch] processed:', abs, '->', out);
         this.processed.set(k, now);
+        // もし出力先が同一監視フォルダ配下なら、直後の再処理を避けるため出力も processed に登録
+        try {
+          if (this.isInside(out, dir)) {
+            const st = await fs.stat(out).catch(() => null as any);
+            if (st && st.isFile()) {
+              const ok = { name: path.relative(dir, out), size: st.size, mtimeMs: st.mtimeMs };
+              const kk = this.fileKey(dir, ok);
+              this.processed.set(kk, Date.now());
+            }
+          }
+        } catch { /* ignore */ }
       } catch (e) {
         log.warn('[folder-watch] process failed:', (e as Error)?.message || String(e));
       } finally {
@@ -924,22 +996,27 @@ const createWindow = () => {
   } catch { /* ignore */ }
 
   // and load the index.html of the app.
-  // Use app.isPackaged to reliably detect packaged production vs dev.
+  // Treat NODE_ENV=production as prod-like even when not packaged (e.g., npm run start:prod)
   const devServerURL = 'http://127.0.0.1:5173';
-  if (!app.isPackaged) {
-    // Development: load Vite dev server
-    mainWindow.loadURL(devServerURL);
-  } else {
-    // Production (packaged): load built renderer file
+  const isProdLike = app.isPackaged || process.env.NODE_ENV === 'production';
+  if (isProdLike) {
+    // Load built renderer file
     const rendererIndex = path.join(__dirname, '../../renderer/index.html');
     log.info('[main] loading renderer file:', rendererIndex);
     mainWindow.loadFile(rendererIndex);
-    // After loadFile in production, ensure window is shown
     try {
       mainWindow.once('did-finish-load', () => {
         try { mainWindow?.show(); mainWindow?.focus(); } catch { /* ignore */ }
       });
     } catch { /* ignore */ }
+  } else {
+    // Development: load Vite dev server
+    mainWindow.loadURL(devServerURL).catch(() => {
+      // Fallback to built file if dev server is not running
+      const rendererIndex = path.join(__dirname, '../../renderer/index.html');
+      log.warn('[main] dev server unreachable, fallback to:', rendererIndex);
+      try { mainWindow.loadFile(rendererIndex); } catch { /* ignore */ }
+    });
   }
 
   // Open the DevTools only in development (unpackaged) mode.
@@ -1064,7 +1141,8 @@ app.on('ready', async () => {
           let saved = 0;
           try {
             // eslint-disable-next-line @typescript-eslint/no-var-requires
-            const { chromium } = require('playwright');
+            let chromium: any;
+            try { chromium = require('playwright').chromium; } catch { chromium = require('playwright-core').chromium; }
             // Use only fixed screenshot auth storage
             const storageStatePath = path.join(getScreenshotRoot(), '.auth', 'x.storage.json');
             const browser = await chromium.launch({ headless: true });

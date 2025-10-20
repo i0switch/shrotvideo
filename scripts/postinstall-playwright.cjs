@@ -21,8 +21,9 @@ function run() {
       console.warn('[postinstall-playwright] playwright-core not found; skipping');
       return resolve(true);
     }
-    const env = { ...process.env, PLAYWRIGHT_BROWSERS_PATH: '0' };
-    const child = spawn(process.execPath, [cliJs, 'install', 'chromium'], { stdio: 'inherit', env });
+  const env = { ...process.env, PLAYWRIGHT_BROWSERS_PATH: '0' };
+  // Install both chromium and chromium-headless-shell to match runtime expectations in v1.55+
+  const child = spawn(process.execPath, [cliJs, 'install', 'chromium', 'chromium-headless-shell'], { stdio: 'inherit', env });
     child.on('close', (code) => resolve(code === 0));
     child.on('error', () => resolve(false));
   });

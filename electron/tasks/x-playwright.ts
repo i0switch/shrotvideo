@@ -69,7 +69,13 @@ export async function captureXPostsPlaywright(user: string, count: number, outDi
   // Try to reuse storage from bundled screenshot backend if present
   const storageStatePath = path.join(process.cwd(), 'screenshot', '.auth', 'x.storage.json');
   const hasStorage = fs.existsSync(storageStatePath);
-  const { chromium } = await import('playwright');
+  // Prefer full playwright, but fallback to playwright-core in packaged runtime
+  let chromium: any;
+  try {
+    chromium = (await import('playwright')).chromium;
+  } catch {
+    chromium = (await import('playwright-core')).chromium as any;
+  }
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({
     storageState: hasStorage ? storageStatePath : undefined,

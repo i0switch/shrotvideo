@@ -9,6 +9,11 @@ const path = require('path');
 const { createHash } = require('crypto');
 
 // Use playwright-core (browsers supplied via PLAYWRIGHT_BROWSERS_PATH)
+// If the env var is not set (e.g., packaged app), try resources/playwright_browsers
+if (!process.env.PLAYWRIGHT_BROWSERS_PATH && process.resourcesPath) {
+  const p = require('path');
+  process.env.PLAYWRIGHT_BROWSERS_PATH = p.join(process.resourcesPath, 'playwright_browsers');
+}
 const { chromium } = require('playwright-core');
 
 function parseArgs(argv) {

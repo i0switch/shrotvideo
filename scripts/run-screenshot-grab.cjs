@@ -4,6 +4,11 @@ const fs = require('fs');
 const fsp = require('fs/promises');
 const path = require('path');
 const { createHash } = require('crypto');
+// Auto set PLAYWRIGHT_BROWSERS_PATH when running inside packaged electron resources
+if (!process.env.PLAYWRIGHT_BROWSERS_PATH && process.resourcesPath) {
+  const p = require('path');
+  process.env.PLAYWRIGHT_BROWSERS_PATH = p.join(process.resourcesPath, 'playwright_browsers');
+}
 const { chromium } = require('playwright-core');
 
 async function ensureDir(p) {
